@@ -88,7 +88,7 @@ def _parse_pcb(rows: list[tuple]) -> list[dict]:
     current_board = ""
     current_sub = ""
 
-    # 科沃斯格式有"类别2"列
+    # 部分品牌格式有"类别2"列
     has_sub_category = (
         len(header) > 2
         and header[2] is not None
