@@ -2,9 +2,9 @@
 name: unit-bot
 description: 扫地机器人 BOM 成本分析与技术选型专家。当用户询问扫地机器人（robot vacuum）的 BOM 成本、技术选型、零部件对比、供应链分析、竞品拆解时使用此技能。支持自动网络调研新产品并写入本地数据库。
 version: 1.0.0
-homepage: https://github.com/fifteenbao/unit-bot
+homepage: https://github.com/fifteenbao/bom-agent
 user-invocable: true
-metadata: {"openclaw": {"requires": {"bins": ["python3", "pip3"], "env": ["ANTHROPIC_API_KEY"]}, "primaryEnv": "ANTHROPIC_API_KEY", "emoji": "🤖", "os": ["darwin", "linux"], "forwardPort": 8090, "forwardPath": "/hooks/agent"}}
+metadata: {"openclaw": {"requires": {"bins": ["python3", "pip3"]}, "emoji": "🤖", "os": ["darwin", "linux"], "forwardPort": 8090, "forwardPath": "/hooks/agent"}}
 ---
 
 # BOM Agent — 扫地机器人技术选型与成本分析
@@ -72,7 +72,7 @@ curl -s -X POST http://localhost:8090/hooks/agent \
 
 | 变量 | 必填 | 说明 |
 |------|------|------|
-| `ANTHROPIC_API_KEY` | ✅ | Claude API 密钥 |
+| `ANTHROPIC_API_KEY` | 由 OpenClaw 注入 | Claude API 密钥，OpenClaw 已配置则无需额外设置 |
 | `OPENCLAW_WEBHOOK_SECRET` | 可选 | 请求验签密钥 |
 | `OPENCLAW_BOT_PORT` | 可选 | 服务端口（默认 8090） |
 | `BOM_EXCEL_FILE` | 可选 | 私有拆机 Excel 路径 |
