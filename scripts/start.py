@@ -18,10 +18,6 @@ try:
 except ImportError:
     pass
 
-if not os.getenv("ANTHROPIC_API_KEY"):
-    print("❌ 未设置 ANTHROPIC_API_KEY，请在 .env 文件或环境变量中配置")
-    sys.exit(1)
-
 port = int(os.getenv("OPENCLAW_BOT_PORT", "8090"))
 print(f"🤖 BOM Agent 启动中，端口 {port} …")
 
