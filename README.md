@@ -7,7 +7,7 @@
 ## OpenClaw 安装
 
 ```bash
-openclaw skills add https://github.com/fifteenbao/bom-agent
+openclaw skills add https://github.com/fifteenbao/unit-bot
 ```
 
 安装后在任意已连接频道（Slack / WhatsApp / Telegram 等）发送消息即可使用，无需额外配置 API Key。

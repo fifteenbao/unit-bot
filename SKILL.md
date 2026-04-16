@@ -2,7 +2,7 @@
 name: unit-bot
 description: 扫地机器人 BOM 成本分析与技术选型专家。当用户询问扫地机器人（robot vacuum）的 BOM 成本、技术选型、零部件对比、供应链分析、竞品拆解时使用此技能。支持自动网络调研新产品并写入本地数据库。
 version: 1.0.0
-homepage: https://github.com/fifteenbao/bom-agent
+homepage: https://github.com/fifteenbao/unit-bot
 user-invocable: true
 metadata: {"openclaw": {"requires": {"bins": ["python3", "pip3"]}, "emoji": "🤖", "os": ["darwin", "linux"], "forwardPort": 8090, "forwardPath": "/hooks/agent"}}
 ---
