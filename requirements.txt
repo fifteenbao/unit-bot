@@ -1,0 +1,10 @@
+# Core
+anthropic>=0.40.0
+openpyxl>=3.1.0
+rich>=13.0.0
+
+# Feishu Bot
+flask>=3.0.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+gunicorn>=21.0.0       # 生产部署用
