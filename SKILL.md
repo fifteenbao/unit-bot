@@ -20,12 +20,6 @@ FEISHU_PRODUCT_TABLE_URL=https://your-feishu-domain/base/xxx?table=tbl_product
 # 拆机数据库（PCB/电机/传感器级数据，实物拆机维护）
 FEISHU_TEARDOWN_TABLE_URL=https://your-feishu-domain/base/xxx?table=tbl_teardown
 
-# 飞书开放平台凭证（同步写入时必填）
-FEISHU_APP_ID=cli_xxx
-FEISHU_APP_SECRET=xxx
-
-# Claude API 密钥
-ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 > 未配置飞书链接时，Agent 以纯网络调研模式运行（规格层通过 web_search 获取，PCB/电机级数据标注为 estimate）。
@@ -90,14 +84,32 @@ PCB          主板          CPU               MR813        1
 
 ---
 
-## 其他查询示例
+## 使用示例
 
-```
-越障 4cm 的产品用了哪些驱动轮电机？
-[产品名] 哪些件是溢价件，降本空间在哪里？
-对比 [产品A] 和 [产品B] 的基站系统成本
-列出所有拆机数据中出现过的 CPU 型号
-```
+**BOM 完整分析**
+> 石头 G30S Pro，分析 BOM 成本
+
+→ 7 步自动执行，输出：8 桶成本拆解 + 供应链替代方案 + 竞品差异
+
+**零部件跨产品查询**
+> 越障 4cm 的产品用了哪些驱动轮电机？
+
+→ 返回匹配产品列表及电机型号 / 厂商对比
+
+**降本空间分析**
+> 石头 G20S，哪些件是溢价件，降本空间在哪里？
+
+→ 匹配标准件库，给出替代方案和节省金额估算
+
+**子系统横向对比**
+> 对比科沃斯 X8 Pro 和石头 S8 MaxV Ultra 的基站系统成本
+
+→ 逐子模组拆解，标注差异件与成本差距
+
+**数据库直查**
+> 列出所有拆机数据中出现过的 CPU 型号
+
+→ 从拆机库提取，标注对应机型与置信度
 
 ---
 
@@ -109,8 +121,6 @@ PCB          主板          CPU               MR813        1
 |------|------|------|
 | `FEISHU_PRODUCT_TABLE_URL` | 推荐 | 飞书产品数据库表格链接 |
 | `FEISHU_TEARDOWN_TABLE_URL` | 推荐 | 飞书拆机数据库表格链接 |
-| `FEISHU_APP_ID` | 飞书同步时必填 | 飞书开放平台 App ID |
-| `FEISHU_APP_SECRET` | 飞书同步时必填 | 飞书开放平台 App Secret |
 | `BOM_EXCEL_FILE` | 可选 | 本地拆机 Excel 路径（覆盖飞书） |
 | `OPENCLAW_WEBHOOK_SECRET` | **强烈建议** | 请求验签密钥，防止局域网内其他设备调用 |
 | `OPENCLAW_BOT_PORT` | 可选 | Webhook 服务端口（默认 8090） |
