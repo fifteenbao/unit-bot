@@ -30,7 +30,7 @@ def _find_excel() -> Path | None:
         return p if p.exists() else None
 
     data_dir = Path(__file__).parent.parent / "data"
-    xlsx_files = sorted(data_dir.glob("*.xlsx"))
+    xlsx_files = sorted(f for f in data_dir.glob("*.xlsx") if not f.name.startswith("~$"))
     return xlsx_files[0] if xlsx_files else None
 
 
@@ -149,7 +149,7 @@ def _parse_pcb(rows: list[tuple]) -> list[dict]:
 
 def _parse_motors(rows: list[tuple]) -> list[dict]:
     items: list[dict] = []
-    for row in rows[1:]:
+    for row in rows[0:]:
         cols = list(row) + [None] * 10
         name  = str(cols[1]).strip() if cols[1] else ""
         mtype = str(cols[2]).strip() if cols[2] else ""
@@ -172,7 +172,7 @@ def _parse_motors(rows: list[tuple]) -> list[dict]:
 
 def _parse_sensors(rows: list[tuple]) -> list[dict]:
     items: list[dict] = []
-    for row in rows[1:]:
+    for row in rows[0:]:
         cols  = list(row) + [None] * 10
         name  = str(cols[1]).strip() if cols[1] else ""
         stype = str(cols[2]).strip() if cols[2] else ""
@@ -195,7 +195,7 @@ def _parse_sensors(rows: list[tuple]) -> list[dict]:
 
 def _parse_others(rows: list[tuple]) -> list[dict]:
     items: list[dict] = []
-    for row in rows[1:]:
+    for row in rows[0:]:
         cols  = list(row) + [None] * 10
         name  = str(cols[1]).strip() if cols[1] else ""
         itype = str(cols[2]).strip() if cols[2] else ""

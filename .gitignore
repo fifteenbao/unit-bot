@@ -9,7 +9,12 @@ data/*.csv
 # 运行时数据库（本地产品库 & 标准件库，含私有拆机数据）
 data/products_db.json
 data/components_lib.json
+data/components_lib.csv
 data/product_specs.json
+
+# 拆机分析与标准件库（私有数据，不入 git）
+data/teardowns/
+data/lib/
 
 # Python
 __pycache__/

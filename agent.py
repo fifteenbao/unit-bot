@@ -274,10 +274,10 @@ def tool_save_product(product_key: str, product_data: dict) -> str:
     update_completeness(product_key)
     comp = entry.get("data_sources", {}).get("completeness", {})
 
-    # 双写到飞书多维表格（未配置时静默跳过）
+    # 同步到飞书多维表格（未配置时静默跳过）
     try:
-        from feishu.bitable import sync_product_to_bitable
-        sync_product_to_bitable(product_key, entry)
+        from core.feishu_sync import sync_product
+        sync_product(product_key, entry)
     except Exception:
         pass
 
@@ -400,10 +400,10 @@ def tool_save_component(comp_id: str, comp_data: dict) -> str:
     """
     entry = upsert_component(comp_id, comp_data)
 
-    # 双写到飞书多维表格（未配置时静默跳过）
+    # 同步到飞书多维表格（未配置时静默跳过）
     try:
-        from feishu.bitable import sync_component_to_bitable
-        sync_component_to_bitable(entry)
+        from core.feishu_sync import sync_components_lib
+        sync_components_lib([entry])
     except Exception:
         pass
 
@@ -543,6 +543,64 @@ def tool_compare_cost_benchmark(product_keys: list[str] | None = None) -> str:
             for k, v in category_benchmarks.items()
         },
         "products": result,
+    }, ensure_ascii=False, indent=2)
+
+
+def tool_crawl_product_specs(
+    model_name: str,
+    force_refresh: bool = False,
+) -> str:
+    """
+    启动对指定产品型号的规格层网络调研任务。
+    返回当前数据库状态 + 缺失字段清单 + 建议搜索关键词，
+    供 Agent 调用 web_search/web_fetch 补全后写入 save_product。
+    """
+    db = load_db()
+
+    # 模糊匹配已有 key
+    matched_key = None
+    for k in db:
+        if model_name.lower().replace(" ", "") in k.lower().replace(" ", "") or \
+           k.lower().replace(" ", "") in model_name.lower().replace(" ", ""):
+            matched_key = k
+            break
+
+    existing: dict = {}
+    completeness: dict = {}
+    if matched_key and not force_refresh:
+        existing = db[matched_key]
+        completeness = existing.get("data_sources", {}).get("completeness", {})
+
+    # 规格层缺失字段
+    specs = existing.get("specs", {})
+    missing_specs = [f for f in [
+        "suction_power_pa", "obstacle_height_cm", "battery_capacity_mah",
+        "battery_life_min", "lidar_type", "navigation", "mop_lift",
+        "mop_lift_type", "drive_wheel_type", "self_cleaning", "hot_air_dry",
+        "auto_empty", "auto_wash",
+    ] if specs.get(f) is None]
+
+    # 建议搜索词（分层）
+    search_queries = [
+        f"{model_name} 规格参数 吸力 续航 越障高度 电池容量",
+        f"{model_name} 导航方式 雷达 传感器 避障",
+        f"{model_name} 拖布系统 基站功能 上下水",
+        f"{model_name} 零售价 上市时间 官方商城",
+    ]
+
+    return json.dumps({
+        "model_name":       model_name,
+        "db_key":           matched_key,
+        "completeness":     completeness,
+        "missing_specs":    missing_specs,
+        "has_bom":          bool(existing.get("bom_cost", {}).get("total_bom_cny")),
+        "has_motors":       bool(existing.get("motors")),
+        "has_pcb":          bool(existing.get("pcb_components")),
+        "suggested_queries": search_queries,
+        "instruction": (
+            "请依次执行 suggested_queries 的搜索，提取规格后调用 save_product 写入数据库。"
+            "bom_source 标注为 'web'。PCB/电机级数据无法从网络获取，跳过。"
+        ),
     }, ensure_ascii=False, indent=2)
 
 
@@ -886,6 +944,24 @@ CLIENT_TOOLS: list[dict] = [
         },
     },
     {
+        "name": "crawl_product_specs",
+        "description": (
+            "启动对指定机型的规格层网络调研。返回当前数据库状态、缺失字段清单和建议搜索词，"
+            "Agent 执行 web_search 补全后调用 save_product 写入。\n"
+            "适用场景：新产品首次入库 / 已有产品规格不完整 / 定期刷新价格和上市状态。\n"
+            "注意：PCB级芯片型号无法从网络获取，需要实物拆机数据。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "model_name":     {"type": "string", "description": "产品型号，如 '追觅X40 Ultra'"},
+                "force_refresh":  {"type": "boolean", "default": False,
+                                   "description": "True 则忽略已有数据，重新调研"},
+            },
+            "required": ["model_name"],
+        },
+    },
+    {
         "name": "generate_bom_estimate",
         "description": (
             "按7桶结构（感知与控制/动力系统/清洁模组/电池动力/基站系统/机身结构CMF/包装耗材）"
@@ -927,6 +1003,9 @@ CLIENT_DISPATCH = {
     "delete_component":     lambda a: tool_delete_component(a["comp_id"]),
     "match_bom_to_library": lambda a: tool_match_bom_to_library(a["product_key"]),
     "compare_cost_benchmark":  lambda a: tool_compare_cost_benchmark(a.get("product_keys")),
+    "crawl_product_specs":     lambda a: tool_crawl_product_specs(
+        a["model_name"], a.get("force_refresh", False)
+    ),
     "generate_bom_estimate":   lambda a: tool_generate_bom_estimate(
         a["product_key"], a.get("retail_price_cny"), a.get("overrides")
     ),
@@ -939,83 +1018,92 @@ CLIENT_DISPATCH = {
 
 SYSTEM_PROMPT = """你是扫地机器人行业的 BOM 成本分析与技术拆解专家。
 
-## 你管理两个数据库
+## 数据源
 
-### 1. 产品数据库（products_db.json）
-现有产品数据库已收录若干款拆机实测产品，覆盖主流旗舰价位段。
+系统维护两张固定格式的人工数据库（飞书多维表格）：
+- **产品数据库**：规格 / 价格 / 功能布尔值，人工录入维护
+- **拆机数据库**：PCB 芯片 / 电机 / 传感器级实物数据，实物拆机后录入
 
-### 2. 标准件库（components_lib.json）— 硬件分层架构
-| 分类 | 代表件 |
-|------|--------|
-| navigation 导航模组 | dToF/LDS 激光雷达、双目视觉避障 |
-| perception_ctrl 感知与控制 | 主控SoC（旭日5/RK3566/MR153）、IMU |
-| power_motion 动力系统 | 吸尘风机（25000Pa+）、驱动轮模组、升降机构 |
-| cleaning_system 清洁系统 | 0缠绕滚刷、FlexiArm边刷、拖布升降、蠕动泵 |
-| battery_bms 续航系统 | 18650/21700电芯（CATL/BYD/EVE）、BMS模块 |
-| dock_station 基站系统 | PTC加热（100°C）、集尘风机、流量计、浊度传感器、电磁阀、隔膜泵 |
-| cmf_structure 机身结构与CMF | ABS外壳、PC透明件、改性塑料、注塑费、喷涂费、镭雕 |
-| packaging 包装与耗材 | 集尘袋、包装箱辅料 |
+若用户未配置飞书表格链接，提示：
+> "请在 .env 中配置 FEISHU_PRODUCT_TABLE_URL 和 FEISHU_TEARDOWN_TABLE_URL，或使用本地 Excel（BOM_EXCEL_FILE）。未配置时以网络调研模式运行。"
+
+## 标准件库（components_lib.csv）— BOM 8桶架构
+
+| 桶 | bom_bucket | 代表件 |
+|----|------------|--------|
+| 1 算力与电子 | compute_electronics | SoC/MCU/Wi-Fi/PMIC/被动元件 |
+| 2 感知系统   | perception          | LDS/dToF、结构光摄像头、IMU、超声波 |
+| 3 动力与驱动 | power_motion        | 吸尘风机、驱动轮电机、底盘升降机构 |
+| 4 清洁功能   | cleaning            | 拖布电机/升降、边刷电机、水泵、滚刷 |
+| 5 基站系统   | dock_station        | 集尘风机、PTC加热、水路、基站主控板 |
+| 6 能源系统   | energy              | 18650/21700 电芯、BMS、充电 IC |
+| 7 整机结构CMF | structure_cmf      | 外壳注塑、喷涂、模具摊销 |
+| 8 MVA+软件授权 | mva_software      | 组装人工、OS授权、算法版税、包材 |
+
+各桶基准占比：算力10~12% / 感知10~12% / 动力9~11% / 清洁12~15% / 基站20~25% / 能源7~9% / CMF10~12% / MVA8~12%
+整机 BOM 率：旗舰机约 **48~55%**（零售价）
 
 ---
 
-## 产品写入标准流程（6步）
+## BOM 成本分析标准流程（7步）
 
-当用户要求添加某款产品时，**必须依序完成以下6步**：
+当用户发送 **"[品牌][型号]，分析 BOM 成本"** 时，**必须依序完成以下7步**：
 
-### Step 1 — 硬件分层检索
-按照8个硬件层分别 web_search，依次搜索：
-- 导航方案（LDS/dToF/双目+型号）
-- 主控SoC（芯片型号+NPU算力）
-- 动力（吸力Pa+风机+驱动轮类型+越障高度）
-- 清洁（滚刷/边刷/拖布升降方式）
-- 续航（电芯型号+容量+BMS）
-- 基站（加热温度+集尘+上下水+特殊功能）
-- CMF（材质/喷涂工艺/外观设计）
-- 零售价+上市时间+定位
+### Step 1 — 查库
+调用 `get_product_detail` 检查产品数据库是否已有该机型。
+调用 `get_missing_data` 确认规格缺口和拆机数据状态。
+若 motors / pcb / sensors 非空，后续 BOM 估算优先使用拆机实测值，对应桶标注 `teardown`。
 
-### Step 2 — 写入产品数据库
-调用 `save_product`，填写对应字段，bom_source 标注 "web"。
-同步检查标准件库中是否有对应件需要新增/更新（用 `save_component`）。
+### Step 2 — 网络检索
+调用 `crawl_product_specs` 获取缺失字段清单和建议搜索词。
+执行 `web_search` 补全规格层（吸力 / 续航 / 越障 / 功能布尔值 / 价格 / 上市时间）。
+PCB 级芯片型号无法从网络获取，跳过，BOM 对应桶标注 `estimate`。
 
-### Step 3 — 技术亮点总结
+### Step 3 — 写入数据库
+调用 `save_product` 持久化，标注：
+- `bom_source: "teardown"` — 拆机数据库来源
+- `bom_source: "web"` — 网络调研来源
+- `bom_source: "estimate"` — 行业基准推算
+
+### Step 4 — 技术亮点
 列出 3~5 个该产品的核心技术差异点（与行业/竞品相比的创新或领先项）。
 
-### Step 4 — BOM 成本预估
-按 7 桶结构输出成本估算表（参考行业基准，以人民币计）：
+### Step 5 — BOM 估算（8桶）
+调用 `generate_bom_estimate`，输出 8桶结构成本预估表（有拆机数据的桶标注 teardown，其余 estimate）：
 
-| 子系统 | 主要构成 | 成本区间（元） | 占比% |
-|--------|---------|---------------|-------|
-| 感知与控制 | 主板+摄像头+LDS | 400~500 | ~18% |
-| 动力系统 | 风机+驱动轮模组 | 220~290 | ~10% |
-| 清洁模组 | 拖布/履带+泵+水箱 | 320~400 | ~15% |
-| 电池动力 | 电芯+BMS | 145~180 | ~7% |
-| 基站系统 | 加热+水路+集尘+触控 | 720~940 | ~35% |
-| 机身结构与CMF | 外壳+注塑+喷涂+滚刷 | 220~290 | ~10% |
-| 包装与耗材 | 尘袋+滤网+包材 | 72~108 | ~5% |
-| **合计预估** | — | **2100~2700** | 100% |
+| 桶 | 主要构成 | 成本区间（元） | 占比% | 数据来源 |
+|----|---------|---------------|-------|--------|
+| 算力与电子 | 主板+MCU+Wi-Fi | 240~300 | ~11% | estimate |
+| 感知系统 | LDS+摄像头+IMU | 260~320 | ~11% | estimate |
+| 动力与驱动 | 风机+驱动轮 | 210~270 | ~10% | estimate |
+| 清洁功能 | 拖布+水泵+边刷 | 280~360 | ~13% | estimate |
+| 基站系统 | 集尘+水路+加热 | 480~640 | ~22% | estimate |
+| 能源系统 | 电芯+BMS | 160~200 | ~8% | estimate |
+| 整机结构CMF | 外壳+注塑+喷涂 | 240~300 | ~11% | estimate |
+| MVA+软件授权 | 组装+版税+包材 | 200~260 | ~9% | estimate |
+| **合计** | — | **2070~2650** | 100% | — |
 
-> 基准汇率 1 USD ≈ 7.2 CNY；零售价 ¥4599 对应 BOM 率约 46~59%。
-> 拆机实测数据才能精确到子件，网络调研数据应标注为 estimate。
+### Step 6 — 供应链 & 降本分析
+针对核心件（SoC / 雷达 / 电芯 / 加热模组 / 风机），给出：
+- 主供应商（国内 / 海外） + 主要替代厂商
+- 可降级方案 + 预估节省金额（元/台）
+- 专利风险提示（拖布升降 / 伸缩边刷等高风险件）
 
-### Step 5 — 供应链与替代方案分析
-针对核心件（SoC/雷达/电芯/加热模组），给出：
-- 主供应商 + 主要替代厂商
-- 可降级方案 + 预估节省金额
-
-### Step 6 — 关键差异分析
-对比数据库中定位相近的产品，指出该产品的 2~3 个核心差异点（技术/成本/定位）。
+### Step 7 — 关键差异分析
+调用 `compare_by_spec` 与数据库中同价位段产品对比，
+指出该产品的 2~3 个核心差异点（技术 / 成本 / 定位）。
 
 ---
 
 ## 数据规范
-- product_key：品牌+型号，如 "追觅X40Ultra"
-- release_date："2025-10"
-- market_segment：旗舰（>4000）/ 中高端（2000-4000）/ 入门（<2000）
-- bom_source："teardown"（实物拆机）/ "estimate"（推算）/ "web"（网络公开）
+- `product_key`：品牌+型号，如 `"追觅X40Ultra"`
+- `release_date`：`"2025-10"`
+- `market_segment`：旗舰（>4000元）/ 中高端（2000~4000元）/ 入门（<2000元）
+- `confidence`：`confirmed`（实物核实）/ `inferred`（同平台推断）/ `estimated`（行业基准）
 
 ## 专业原则
-- 拆机BOM（芯片/电机型号）来自实物拆解，网络通常无法获取，应标注为 estimate
-- 专利风险高的件（拖布升降/伸缩边刷）主动提示合规成本
+- 拆机BOM（芯片/电机型号）来自实物，网络无法获取，必须标注 estimate
+- 专利风险高的件主动提示合规成本
 - 输出使用结构化表格，中文，简洁准确
 """
 

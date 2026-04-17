@@ -2,7 +2,7 @@
 
 行业分析工具，帮助进行扫地机器人（RVC）的 BOM 成本拆解、技术选型对比和竞品分析。
 
-支持作为 **OpenClaw skill** 一键安装，接入 Slack / WhatsApp / Telegram / Discord 等任意频道使用。
+支持作为 **OpenClaw skill** 一键安装，接入飞书 / Slack / WhatsApp / Telegram / Discord 等任意频道使用。
 
 ---
 
@@ -14,18 +14,41 @@
 openclaw skills add https://github.com/fifteenbao/unit-bot
 ```
 
-安装完成后，在任意已连接的频道发送消息即可使用，**无需额外配置 API Key**。
+安装完成后，首次使用前配置飞书数据库链接（见下方"数据库配置"），然后在任意已连接的频道发送消息即可，**无需配置 API Key**。
 
-> 首次使用时，OpenClaw 会自动安装 Python 依赖并启动本地 webhook 服务（端口 8090）。
+> OpenClaw 会自动安装 Python 依赖并启动本地 webhook 服务（端口 8090，建议配置 `OPENCLAW_WEBHOOK_SECRET` 防止局域网未授权访问）。
+
+---
+
+## 数据库配置（首次使用）
+
+本 skill 依赖两张飞书多维表格作为数据源，在 `.env` 中填写：
+
+```bash
+# 产品数据库（规格/价格/功能，人工维护）
+FEISHU_PRODUCT_TABLE_URL=https://your-feishu-domain/base/xxx?table=tbl_product
+
+# 拆机数据库（PCB/电机/传感器级数据，实物拆机维护）
+FEISHU_TEARDOWN_TABLE_URL=https://your-feishu-domain/base/xxx?table=tbl_teardown
+
+# 标准件库（build_components.py 生成后同步）
+FEISHU_COMPONENTS_TABLE_URL=https://your-feishu-domain/base/xxx?table=tbl_components
+
+# 飞书开放平台凭证（同步写入时必填）
+FEISHU_APP_ID=cli_xxx
+FEISHU_APP_SECRET=xxx
+```
+
+未配置时以**纯网络调研模式**运行，规格层通过 web_search 获取，PCB/电机级数据标注为 `estimate`。
 
 ---
 
 ## 使用示例
 
 ```
-帮我添加 [品牌][型号]，分析 BOM 成本
+[品牌][型号]，分析 BOM 成本
 ```
-→ 自动执行：网络检索 → 写入数据库 → 技术亮点 → BOM 估算 → 供应链分析 → 竞品差异
+→ 自动执行 7 步：查库 → 网络检索 → 写库 → 技术亮点 → BOM 估算（8桶）→ 供应链分析 → 竞品差异
 
 ```
 越障 4cm 的产品用了哪些驱动轮电机？
@@ -50,7 +73,7 @@ openclaw skills add https://github.com/fifteenbao/unit-bot
 git clone https://github.com/fifteenbao/unit-bot
 cd unit-bot
 pip install -r requirements.txt
-cp .env.example .env   # 填写 ANTHROPIC_API_KEY
+cp .env.example .env   # 填写飞书配置
 
 # 启动 webhook 服务
 python openclaw_bot.py
@@ -70,54 +93,82 @@ curl -X POST http://localhost:8090/hooks/agent \
 
 ```
 unit-bot/
-├── SKILL.md            # OpenClaw skill 清单
-├── openclaw_bot.py     # Webhook 服务器（/hooks/agent）
-├── agent.py            # BOM Agent 核心逻辑（Claude 工具调用循环）
-├── scripts/
-│   └── start.py        # 服务启动入口
+├── SKILL.md                  # OpenClaw skill 清单与配置说明
+├── openclaw_bot.py            # Webhook 服务器（/hooks/agent）
+├── agent.py                   # BOM Agent 核心逻辑（Claude 工具调用循环）
 ├── core/
-│   ├── db.py           # 产品数据库 CRUD（深度合并 / 完整度追踪）
-│   ├── components_lib.py  # 标准件库 CRUD（41 个初始标准件）
-│   └── bom_loader.py   # 拆机 Excel 解析（可选）
-├── data/               # 运行时数据（不入 git）
+│   ├── db.py                  # 产品数据库 CRUD（深度合并 / 完整度追踪）
+│   ├── bom_loader.py          # 拆机 Excel 解析（自动识别 data/ 目录）
+│   ├── components_lib.py      # 标准件库 JSON CRUD
+│   └── feishu_sync.py         # 飞书多维表格同步（未配置时静默跳过）
+├── scripts/
+│   ├── build_components.py    # 拆机 Excel → teardown CSV + 标准件库
+│   ├── import_products.py     # 产品数据库 xlsx 批量导入
+│   ├── gen_g30spro_teardown.py  # AI 辅助拆机草稿生成（模板）
+│   └── start.py               # 服务启动入口
+├── data/
+│   ├── products_db.json        # 产品规格数据库（含 last_updated）
+│   ├── teardowns/              # 各机型拆机 CSV（含生成日期，历史版本保留）
+│   │   └── {机型}_teardown_{日期}.csv
+│   └── lib/
+│       └── components_lib.csv  # 标准件库（8桶分类，含 last_updated）
 ├── .env.example
 └── requirements.txt
 ```
 
 ---
 
-## 数据资产
+## 数据流
 
-### 产品数据库
+```
+人工维护
+  飞书产品数据库  ──→  import_products.py  ──→  data/products_db.json
+  飞书拆机数据库  ──→  build_components.py ──→  data/teardowns/{机型}_{日期}.csv
+                                           ──→  data/lib/components_lib.csv
 
-内置若干款拆机实测产品数据，覆盖主流旗舰价位段。新产品通过对话自动调研写入，数据本地持久化。
+Agent 自动调研
+  web_search  ──→  crawl_product_specs  ──→  save_product  ──→  products_db.json
+                                                            ──→  飞书产品数据库（同步）
 
-### 标准件库（41 个标准件）
+拆机草稿生成（AI 辅助）
+  gen_*_teardown.py  →  data/{机型}_拆机分析.xlsx  →（人工核准）→  build_components.py
+```
 
-覆盖 2026 年旗舰机 8 个硬件层：导航模组 / 感知与控制 / 动力系统 / 清洁系统 / 续航系统 / 基站系统 / 机身结构CMF / 包装耗材。
-
-每个标准件记录：规格参数、成本区间、主要供应商、专利风险、降级替代方案。
-
----
-
-## 可选：私有拆机数据
-
-将 `.xlsx` 放入 `data/` 目录（或设置 `BOM_EXCEL_FILE=/path/to/file.xlsx`），Agent 自动加载。格式约定：每个 Sheet 对应一款产品，按「电机 / 传感器 / 其他」分 section。
-
-不提供 Excel 时，系统以纯网络调研模式运行。
+数据置信度：`teardown`（实物拆机）> `web`（网络调研）> `estimate`（行业基准推算）
 
 ---
 
-## BOM 成本 7 桶结构
+## BOM 成本分析框架（8桶）
 
-| 子系统 | 内容 | 基准占比 |
-|--------|------|---------|
-| 感知与控制 | 主板 + 摄像头 + LDS/dToF | 18% |
-| 动力系统 | 吸尘风机 + 驱动轮模组 | 10% |
-| 清洁模组 | 拖布 + 泵 + 水箱 | 15% |
-| 电池动力 | 电芯 + BMS | 7% |
-| 基站系统 | 加热 + 水路 + 集尘 + 触控 | 35% |
-| 机身结构CMF | 外壳 + 注塑 + 喷涂 | 10% |
-| 包装耗材 | 尘袋 + 滤网 + 包材 | 5% |
+| # | 子系统 | 核心内容 | 旗舰机基准占比 |
+|---|--------|---------|-------------|
+| 1 | **算力与电子** | SoC 主板 · Wi-Fi/蓝牙模组 · 被动元件 | 10–12% |
+| 2 | **感知系统** | LDS/dToF · 视觉摄像头 · IMU · 超声波 | 10–12% |
+| 3 | **动力与驱动** | 吸尘风机 · 驱动轮模组 · 底盘升降 | 9–11% |
+| 4 | **清洁功能** | 拖布驱动 · 水泵 · 水箱 · 边刷 · 滚刷 | 12–15% |
+| 5 | **基站系统** | 集尘 · 水路 · 加热 · 基站电控 · 基站结构 | 20–25% |
+| 6 | **能源系统** | 电芯 · BMS · 充电电控 | 7–9% |
+| 7 | **整机结构 CMF** | 外壳注塑 · 喷涂/IMD · 模具摊销 | 10–12% |
+| 8 | **MVA + 软件授权** | 组装/测试人工 · 算法版税 · OS 授权 · 包材 | 8–12% |
 
 整机 BOM 率参考：旗舰机约 **48–55%**（零售价）。
+
+### 基站系统细化（第 5 桶）
+
+| 子模组 | 核心内容 | 占基站桶比例 |
+|--------|---------|------------|
+| 集尘模组 | 集尘风机 + 尘袋结构 + HEPA 滤网 | ~30% |
+| 水路模组 | 加热板 + 循环水泵 + 管路 + 污水箱 | ~30% |
+| 基站电控 | 基站主控板 + 触控屏/LED + 传感器 | ~20% |
+| 基站结构 CMF | 外壳注塑 + 喷涂 | ~20% |
+
+### 软件/授权隐形 BOM（第 8 桶）
+
+| 项目 | 单机成本参考 |
+|------|------------|
+| 导航/SLAM 算法版税 | ¥5–20 |
+| 语音/AI 推理授权 | ¥3–10 |
+| RTOS / 中间件 | ¥0–5 |
+| 云服务摊销 | ¥5–15 |
+
+合计约 **¥15–50 / 台**，旗舰机出厂 BOM 占比约 **0.5–2%**。
