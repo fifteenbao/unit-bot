@@ -1,10 +1,8 @@
 ---
 name: unit-bot
 description: 扫地机器人 BOM 成本分析与技术选型专家。当用户询问扫地机器人（robot vacuum）的 BOM 成本、技术选型、零部件对比、供应链分析、竞品拆解时使用此技能。
-version: 1.1.0
-homepage: https://github.com/fifteenbao/unit-bot
 user-invocable: true
-metadata: {"openclaw": {"requires": {"bins": ["python3", "pip3"], "env": ["ANTHROPIC_API_KEY"]}, "primaryEnv": "ANTHROPIC_API_KEY", "emoji": "🤖", "os": ["darwin", "linux"], "forwardPort": 8090, "forwardPath": "/hooks/agent"}}
+metadata: {"openclaw": {"requires": {"bins": ["python3", "pip3"]}, "emoji": "🤖", "os": ["darwin", "linux"], "forwardPort": 8090, "forwardPath": "/hooks/agent"}}
 ---
 
 # unit-bot — 扫地机器人 BOM 成本分析与技术选型
@@ -120,17 +118,6 @@ PCB          主板          CPU               MR813        1
 → 从拆机库提取，标注对应机型与置信度
 
 ---
-
-## 环境变量
-
-> Claude API 密钥和模型由 OpenClaw 统一管理，skill 无需单独配置。
-
-| 变量 | 必填 | 说明 |
-|------|------|------|
-| `OPENCLAW_WEBHOOK_SECRET` | 强烈建议 | 请求验签密钥，防止局域网内其他设备调用 |
-| `OPENCLAW_BOT_PORT` | 可选 | Webhook 服务端口（默认 8090） |
-
-飞书凭证和数据库链接均通过 `config.yaml` 配置，不再使用环境变量。
 
 ---
 
