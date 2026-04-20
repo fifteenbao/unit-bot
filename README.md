@@ -84,27 +84,6 @@ local:
 
 ---
 
-## 手动运行（不使用 OpenClaw）
-
-```bash
-git clone https://github.com/fifteenbao/unit-bot
-cd unit-bot
-pip install -r requirements.txt
-
-# 启动 webhook 服务
-python openclaw_bot.py
-```
-
-服务启动后可直接 curl 调用：
-
-```bash
-curl -X POST http://localhost:8090/hooks/agent \
-  -H "Content-Type: application/json" \
-  -d '{"message": "列出所有产品", "sessionId": "test"}'
-```
-
----
-
 ## 项目结构
 
 ```
