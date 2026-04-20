@@ -14,10 +14,14 @@ data/products_db.json
 data/components_lib.json
 data/components_lib.csv
 data/product_specs.json
+data/产品数据库.csv
 
 # 拆机分析与标准件库（私有数据，不入 git）
 data/teardowns/
 data/lib/
+
+# 公开数据（入 git）
+!data/model_aliases.json
 
 # Python
 __pycache__/

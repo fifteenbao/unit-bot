@@ -1,19 +1,18 @@
 """
 飞书多维表格同步模块
 
-环境变量配置：
-  FEISHU_APP_ID               飞书开放平台 App ID
-  FEISHU_APP_SECRET           飞书开放平台 App Secret
-  FEISHU_PRODUCT_TABLE_URL    产品数据库表格链接
-  FEISHU_TEARDOWN_TABLE_URL   拆机数据库表格链接
-  FEISHU_COMPONENTS_TABLE_URL 标准件库表格链接
+环境变量配置（config.yaml 未填时回退）：
+  FEISHU_APP_ID                飞书开放平台 App ID
+  FEISHU_APP_SECRET            飞书开放平台 App Secret
+  FEISHU_PRODUCT_OBJ_TOKEN     产品数据库 obj_token
+  FEISHU_TEARDOWN_OBJ_TOKEN    拆机数据库 obj_token
+  FEISHU_COMPONENTS_OBJ_TOKEN  标准件库 obj_token
 
 未配置时所有同步操作静默跳过，本地文件仍正常写入。
 """
 from __future__ import annotations
 
 import os
-import re
 import logging
 from typing import Any
 
@@ -102,10 +101,35 @@ def _get_first_table_id(app_token: str, token: str) -> str:
         return ""
 
 
+def _fetch_existing(base_url: str, headers: dict, key_field: str) -> dict[str, str]:
+    """拉取表内所有记录，返回 {key_value: record_id} 映射。"""
+    import requests
+    key_map: dict[str, str] = {}
+    page_token = ""
+    while True:
+        params: dict = {"page_size": 500}
+        if page_token:
+            params["page_token"] = page_token
+        try:
+            resp = requests.get(base_url, headers=headers, params=params, timeout=15)
+            data = resp.json()
+            for item in data.get("data", {}).get("items", []):
+                key_val = str(item.get("fields", {}).get(key_field, ""))
+                if key_val:
+                    key_map[key_val] = item["record_id"]
+            if not data.get("data", {}).get("has_more"):
+                break
+            page_token = data["data"].get("page_token", "")
+        except Exception as e:
+            logger.warning(f"拉取飞书记录失败: {e}")
+            break
+    return key_map
+
+
 def _upsert_records(app_token: str, records: list[dict], key_field: str) -> int:
     """
-    向飞书多维表格写入记录。app_token 即 config 中的 obj_token。
-    table_id 自动取第一张表。返回成功写入条数。
+    向飞书多维表格写入记录（upsert：已存在则更新，不存在则新建）。
+    本地数据为唯一来源，不从飞书回读覆盖本地。
     """
     import requests
     if not app_token or not _is_configured():
@@ -125,22 +149,42 @@ def _upsert_records(app_token: str, records: list[dict], key_field: str) -> int:
     }
     base_url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
 
+    existing = _fetch_existing(base_url, headers, key_field)
+
+    to_create = [r for r in records if str(r.get(key_field, "")) not in existing]
+    to_update = [(existing[str(r[key_field])], r) for r in records
+                 if str(r.get(key_field, "")) in existing]
+
     written = 0
-    for i in range(0, len(records), 500):
-        batch = records[i : i + 500]
-        payload = {"records": [{"fields": r} for r in batch]}
+    for i in range(0, len(to_create), 500):
+        batch = to_create[i : i + 500]
         try:
             resp = requests.post(
                 f"{base_url}/batch_create",
                 headers=headers,
-                json=payload,
+                json={"records": [{"fields": r} for r in batch]},
                 timeout=30,
             )
-            result = resp.json()
-            if result.get("code") == 0:
+            if resp.json().get("code") == 0:
                 written += len(batch)
             else:
-                logger.warning(f"飞书写入失败: {result.get('msg')} (code={result.get('code')})")
+                logger.warning(f"飞书新建失败: {resp.json().get('msg')}")
+        except Exception as e:
+            logger.warning(f"飞书请求异常: {e}")
+
+    for i in range(0, len(to_update), 500):
+        batch = to_update[i : i + 500]
+        try:
+            resp = requests.post(
+                f"{base_url}/batch_update",
+                headers=headers,
+                json={"records": [{"record_id": rid, "fields": r} for rid, r in batch]},
+                timeout=30,
+            )
+            if resp.json().get("code") == 0:
+                written += len(batch)
+            else:
+                logger.warning(f"飞书更新失败: {resp.json().get('msg')}")
         except Exception as e:
             logger.warning(f"飞书请求异常: {e}")
 

@@ -65,17 +65,14 @@ def get_feishu_components_obj_token() -> str:
     return v or os.getenv("FEISHU_COMPONENTS_OBJ_TOKEN", "")
 
 
-def get_local_product_xlsx() -> Path | None:
-    v = _str(_load()["local"].get("product_xlsx"))
+def get_local_product_csv() -> Path | None:
+    v = _str(_load()["local"].get("product_csv"))
     path = Path(v) if v else None
     return path if (path and path.exists()) else None
 
 
-def get_local_teardown_xlsx() -> Path | None:
-    v = _str(_load()["local"].get("teardown_xlsx"))
-    # 也兼容旧环境变量 BOM_EXCEL_FILE
-    if not v:
-        v = os.getenv("BOM_EXCEL_FILE", "")
+def get_local_product_xlsx() -> Path | None:
+    v = _str(_load()["local"].get("product_xlsx"))
     path = Path(v) if v else None
     return path if (path and path.exists()) else None
 

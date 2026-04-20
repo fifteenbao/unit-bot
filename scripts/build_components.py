@@ -1,25 +1,24 @@
 """
-拆机数据 → 标准件库构建工具
+拆机 CSV → 标准件库构建工具
 
-输出目录：
-  data/teardowns/  每款机型一个 CSV，文件名含生成日期
-  data/lib/        标准件库 components_lib.csv，含 last_updated 列
+读取 data/teardowns/*.csv，汇总重建 data/lib/components_lib.csv。
+teardown CSV 中的 confidence 字段（estimate/web/fcc/teardown/confirmed）
+原样传递到 lib，作为每条件的信息来源标注。
 
 用法：
-  python scripts/build_components.py                    # 处理 data/ 所有拆机 xlsx
-  python scripts/build_components.py data/某文件.xlsx   # 处理单文件
+  python scripts/build_components.py           # 读取 data/teardowns/ 所有 CSV
+  python scripts/build_components.py data/teardowns/石头G30SPro_teardown.csv  # 单文件
 """
 from __future__ import annotations
 
 import csv
-import os
 import sys
+from collections import Counter
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from core.bom_loader import _parse_excel
 
 DATA_DIR     = Path(__file__).parent.parent / "data"
 TEARDOWN_DIR = DATA_DIR / "teardowns"
@@ -27,12 +26,6 @@ LIB_DIR      = DATA_DIR / "lib"
 LIB_CSV      = LIB_DIR / "components_lib.csv"
 
 TODAY = date.today().isoformat()  # e.g. "2026-04-17"
-
-TEARDOWN_FIELDS = [
-    "bom_bucket", "section", "name", "model", "type",
-    "spec", "manufacturer", "unit_price", "qty", "confidence",
-    "product_source", "generated_date",
-]
 
 LIB_FIELDS = [
     "id", "bom_bucket", "bom_bucket_cn", "name", "name_en",
@@ -158,100 +151,6 @@ def _bucket_other(name: str) -> str:
     return "structure_cmf"
 
 
-# ── 拆机数据 → 扁平行列表 ──────────────────────────────────────
-
-def _flatten(model: str, sections: dict) -> list[dict]:
-    rows: list[dict] = []
-
-    for item in sections.get("pcb", []):
-        func = item.get("function", "") or ""
-        if not func:
-            continue
-        rows.append({
-            "bom_bucket":    _bucket_pcb(func, item.get("board", "")),
-            "section":       "PCB",
-            "name":          func,
-            "model":         item.get("model", ""),
-            "type":          item.get("sub_board", "") or item.get("board", ""),
-            "spec":          item.get("spec", ""),
-            "manufacturer":  item.get("manufacturer", ""),
-            "unit_price":    item.get("unit_price", ""),
-            "qty":           item.get("qty", ""),
-            "confidence":    "confirmed" if item.get("unit_price") else "inferred",
-            "product_source": model,
-        })
-
-    for item in sections.get("motors", []):
-        name = item.get("name", "") or ""
-        if not name:
-            continue
-        rows.append({
-            "bom_bucket":    _bucket_motor(name),
-            "section":       "电机",
-            "name":          name,
-            "model":         item.get("model", ""),
-            "type":          item.get("type", ""),
-            "spec":          item.get("params", ""),
-            "manufacturer":  item.get("manufacturer", ""),
-            "unit_price":    "",
-            "qty":           item.get("qty", ""),
-            "confidence":    "confirmed",
-            "product_source": model,
-        })
-
-    for item in sections.get("sensors", []):
-        name = item.get("name", "") or ""
-        if not name:
-            continue
-        rows.append({
-            "bom_bucket":    _bucket_sensor(name),
-            "section":       "传感器",
-            "name":          name,
-            "model":         "",
-            "type":          item.get("type", ""),
-            "spec":          item.get("note", ""),
-            "manufacturer":  item.get("manufacturer", ""),
-            "unit_price":    item.get("unit_price", ""),
-            "qty":           item.get("qty", ""),
-            "confidence":    "confirmed" if item.get("unit_price") else "inferred",
-            "product_source": model,
-        })
-
-    for item in sections.get("others", []):
-        name = item.get("name", "") or ""
-        if not name:
-            continue
-        rows.append({
-            "bom_bucket":    _bucket_other(name),
-            "section":       "其他",
-            "name":          name,
-            "model":         "",
-            "type":          item.get("type", ""),
-            "spec":          item.get("spec", ""),
-            "manufacturer":  item.get("manufacturer", ""),
-            "unit_price":    item.get("price", ""),
-            "qty":           1,
-            "confidence":    "confirmed" if item.get("price") else "inferred",
-            "product_source": model,
-        })
-
-    return rows
-
-
-# ── 写 teardown CSV ─────────────────────────────────────────────
-
-def write_teardown_csv(model: str, rows: list[dict], out_dir: Path) -> Path:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    # 文件名含生成日期，旧版本自动保留（不覆盖）
-    path = out_dir / f"{model}_teardown_{TODAY}.csv"
-    dated_rows = [{**r, "generated_date": TODAY} for r in rows]
-    with open(path, "w", newline="", encoding="utf-8-sig") as f:
-        w = csv.DictWriter(f, fieldnames=TEARDOWN_FIELDS)
-        w.writeheader()
-        w.writerows(sorted(dated_rows, key=lambda r: (r["bom_bucket"], r["section"], r["name"])))
-    return path
-
-
 # ── 汇总 → components_lib.csv ──────────────────────────────────
 
 def build_lib(all_rows: list[dict]) -> list[dict]:
@@ -329,65 +228,29 @@ def _make_id(bucket: str, name: str) -> str:
 
 # ── 主流程 ──────────────────────────────────────────────────────
 
-def process_xlsx(xlsx_path: Path) -> dict[str, list[dict]]:
-    """解析单个 xlsx，返回 {model: [rows]}"""
-    orig_env = os.environ.get("BOM_EXCEL_FILE")
-    os.environ["BOM_EXCEL_FILE"] = str(xlsx_path)
-    data = _parse_excel.__wrapped__(xlsx_path) if hasattr(_parse_excel, "__wrapped__") else None
-
-    # 直接调用解析
-    import openpyxl
-    from core.bom_loader import _parse_pcb, _parse_motors, _parse_sensors, _parse_others
-
-    wb = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
-    result: dict[str, list[dict]] = {}
-
-    for sheet_name in wb.sheetnames:
-        ws = wb[sheet_name]
-        rows = [row for row in ws.iter_rows(values_only=True) if any(v is not None for v in row)]
-
-        pcb_rows, motor_rows, sensor_rows, other_rows = [], [], [], []
-        current = pcb_rows
-        for row in rows:
-            first = str(row[0]).strip() if row[0] else ""
-            if first in ("电机", "Motor"):   current = motor_rows;  continue
-            if first in ("传感器", "Sensor"): current = sensor_rows; continue
-            if first in ("其他", "Other"):   current = other_rows;  continue
-            current.append(row)
-
-        sections = {
-            "pcb":     _parse_pcb(pcb_rows),
-            "motors":  _parse_motors(motor_rows),
-            "sensors": _parse_sensors(sensor_rows),
-            "others":  _parse_others(other_rows),
-        }
-        flat = _flatten(sheet_name, sections)
-        result[sheet_name] = flat
-
-    wb.close()
-    if orig_env is not None:
-        os.environ["BOM_EXCEL_FILE"] = orig_env
-    return result
+def load_teardown_csv(csv_path: Path) -> list[dict]:
+    """读取单个 teardown CSV，返回原始行列表（保留 confidence 来源字段）"""
+    rows = []
+    with csv_path.open(encoding="utf-8-sig") as f:
+        for row in csv.DictReader(f):
+            if row.get("name", "").strip():
+                rows.append(row)
+    return rows
 
 
-def main(xlsx_files: list[Path]):
-    TEARDOWN_DIR.mkdir(exist_ok=True)
+def main(csv_files: list[Path]):
     LIB_DIR.mkdir(exist_ok=True)
     all_rows: list[dict] = []
 
     try:
-        from core.feishu_sync import sync_teardown, sync_components_lib
+        from core.feishu_sync import sync_components_lib
     except ImportError:
-        sync_teardown = sync_components_lib = lambda *a, **kw: None
+        sync_components_lib = lambda *a, **kw: None
 
-    for xlsx in xlsx_files:
-        print(f"\n处理: {xlsx.name}")
-        model_data = process_xlsx(xlsx)
-        for model, rows in model_data.items():
-            path = write_teardown_csv(model, rows, TEARDOWN_DIR)
-            print(f"  ✓ {model}: {len(rows)} 条 → {path.name}")
-            all_rows.extend(rows)
-            sync_teardown(model, rows)
+    for csv_path in csv_files:
+        rows = load_teardown_csv(csv_path)
+        print(f"  ✓ {csv_path.name}: {len(rows)} 条")
+        all_rows.extend(rows)
 
     lib = build_lib(all_rows)
     with open(LIB_CSV, "w", newline="", encoding="utf-8-sig") as f:
@@ -395,25 +258,22 @@ def main(xlsx_files: list[Path]):
         w.writeheader()
         w.writerows(lib)
     print(f"\n标准件库 ({TODAY}): {len(lib)} 条 → {LIB_CSV}")
-    sync_components_lib(lib)
 
-    # 统计各桶
-    from collections import Counter
     buckets = Counter(r["bom_bucket"] for r in lib)
     for bucket, cnt in sorted(buckets.items()):
         print(f"  {BOM_BUCKET_CN.get(bucket, bucket):12s}  {cnt:3d} 条")
 
+    sync_components_lib(lib)
+
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
-        files = [Path(a) for a in sys.argv[1:]]
+        files = [Path(a) for a in sys.argv[1:] if Path(a).suffix == ".csv"]
     else:
-        files = sorted(
-            f for f in DATA_DIR.glob("*.xlsx")
-            if not f.name.startswith("~$")
-        )
+        files = sorted(TEARDOWN_DIR.glob("*.csv"))
         if not files:
-            print("data/ 目录下没有找到 xlsx 文件")
+            print(f"{TEARDOWN_DIR} 目录下没有找到 CSV 文件")
             sys.exit(1)
 
+    print(f"读取 {len(files)} 个 teardown CSV...")
     main(files)

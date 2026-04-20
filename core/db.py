@@ -81,22 +81,23 @@ PRODUCT_TEMPLATE: dict[str, Any] = {
         "weight_kg": None,
     },
 
-    # ── BOM 成本（7桶结构，参考行业基准分摊）────────────────
+    # ── BOM 成本（8桶结构，参考行业基准分摊）────────────────
     "bom_cost": {
-        # 7-bucket 标准分摊（单位：元，也可填区间字符串如 "400~500"）
-        "perception_control_cny": None,    # 感知与控制（主板+摄像头+雷达）~18%
-        "power_motion_cny": None,          # 动力系统（风机+驱动轮模组）~10%
-        "cleaning_module_cny": None,       # 清洁模组（拖布/履带+泵+水箱）~15%
-        "battery_bms_cny": None,           # 电池动力（电芯+BMS）~7%
-        "dock_system_cny": None,           # 基站系统（加热+电解水+水路+触控）~35%
-        "structure_cmf_cny": None,         # 机身结构与CMF（外壳+注塑+喷涂+滚刷）~10%
-        "packaging_consumables_cny": None, # 包装与耗材（尘袋+滤网+包材）~5%
+        # 8-bucket 标准分摊（单位：元）
+        "compute_electronics_cny": None,   # 算力与电子（SoC·MCU·Wi-Fi·被动元件）~11%
+        "perception_cny": None,            # 感知系统（LDS/dToF·摄像头·IMU）~11%
+        "power_motion_cny": None,          # 动力与驱动（风机·驱动轮·升降）~10%
+        "cleaning_cny": None,              # 清洁功能（拖布·水泵·水箱·边刷·滚刷）~14%
+        "dock_station_cny": None,          # 基站系统（集尘·水路·加热·电控）旗舰~22%
+        "energy_cny": None,                # 能源系统（电芯·BMS·充电IC）~8%
+        "structure_cmf_cny": None,         # 整机结构CMF（外壳·注塑·喷涂）~11%
+        "mva_software_cny": None,          # MVA+软件授权（组装·版税·OS·包材）~13%
         "total_bom_cny": None,             # 合计预估
         # 元数据
-        "bom_source": None,               # "teardown" / "estimate" / "web"
+        "bom_source": None,               # "database"/"teardown"/"fcc"/"web"/"estimate"
         "gross_margin_est_pct": None,
         "bom_notes": "",
-        # 旧字段保留（拆机 Excel 数据使用）
+        # 拆机实测字段（Excel 数据写入，不受估算覆盖）
         "pcb_bom_cny": None,
         "pcb_with_labor_cny": None,
         "motors_cost_cny": None,

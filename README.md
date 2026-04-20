@@ -5,8 +5,8 @@
 支持作为 **OpenClaw skill** 一键安装，接入飞书 / Slack / WhatsApp / Telegram / Discord 等任意频道使用。
 
 - [ ] 拆机数据库、成本占比优化
-- [ ] 动态 VAVE,增加 “成本替换矩阵”
-- [ ] CMF 与加工费（MVA）的量化公式,基于克重的成本估算脚本
+- [ ] 动态 VAVE，增加"成本替换矩阵"
+- [ ] CMF 与加工费（MVA）的量化公式，基于克重的成本估算脚本
 
 ---
 
@@ -44,7 +44,7 @@
 
 > 列出所有拆机数据中出现过的 CPU 型号
 
-从拆机数据库提取，注明对应机型与出处置信度（`teardown` / `web` / `estimate`）。
+从拆机数据库提取，注明对应机型与出处置信度（`teardown` / `fcc` / `web` / `estimate`）。
 
 ---
 
@@ -56,39 +56,29 @@
 openclaw skills add https://github.com/fifteenbao/unit-bot
 ```
 
-安装完成后，首次使用前配置飞书数据库链接（见下方"数据库配置"），然后在任意已连接的频道发送消息即可，**无需配置 API Key**。
+安装完成后在任意已连接的频道发送消息即可，**无需配置 API Key**。
 
 > OpenClaw 会自动安装 Python 依赖并启动本地 webhook 服务（端口 8090，建议配置 `OPENCLAW_WEBHOOK_SECRET` 防止局域网未授权访问）。
 
 ---
 
-## 数据库配置（首次使用）
+## 数据库配置（可选）
 
-编辑 `config.yaml`，填写飞书多维表格的 `obj_token` 或本地文件路径（二选一，本地文件优先）：
+**所有数据默认保存在本地 `data/` 目录**，飞书仅作为前端展示层（只写同步，不回读）。未配置飞书时一切正常运行。
+
+编辑 `config.yaml` 启用飞书同步：
 
 ```yaml
 feishu:
-  product_obj_token: ""      # 产品数据库 obj_token
+  product_obj_token: ""      # 产品数据库 obj_token（仅展示用）
   teardown_obj_token: ""     # 拆机数据库 obj_token
   components_obj_token: ""   # 标准件库 obj_token
 
 local:
-  product_xlsx: ""       # 本地产品数据库 xlsx（填写后覆盖飞书）
-  teardown_xlsx: ""      # 本地拆机 Excel
+  product_csv: ""            # 产品数据库 CSV 路径（填写后可用 import_products.py 导入）
 ```
 
-**获取 obj_token**：飞书知识库（Wiki）链接需转换为多维表格的 `obj_token`（即 `app_token`），使用脚本一键解析：
-
-```bash
-python3 scripts/resolve_wiki_token.py \
-  --wiki-url "https://your-domain.feishu.cn/wiki/xxx" \
-  --table-key product_obj_token \
-  --write-config
-```
-
-> 参考：[飞书 Wiki 链接转多维表格 app_token](https://www.feishu.cn/community/article?id=7595138741669203138)
-
-未配置时以**纯网络调研模式**运行，规格层通过 web_search 获取，PCB/电机级数据标注为 `estimate`。
+> `obj_token` 即多维表格的 `app_token`。若表格嵌入在飞书知识库（Wiki）中，需先从 Wiki 链接解析出 `obj_token`，参考：[飞书 Wiki 链接转多维表格 app_token](https://www.feishu.cn/community/article?id=7595138741669203138)
 
 > `config.yaml` 已加入 `.gitignore`，不会提交到仓库。
 
@@ -100,7 +90,6 @@ python3 scripts/resolve_wiki_token.py \
 git clone https://github.com/fifteenbao/unit-bot
 cd unit-bot
 pip install -r requirements.txt
-cp .env.example .env   # 填写飞书配置
 
 # 启动 webhook 服务
 python openclaw_bot.py
@@ -120,28 +109,32 @@ curl -X POST http://localhost:8090/hooks/agent \
 
 ```
 unit-bot/
-├── SKILL.md                  # OpenClaw skill 清单与配置说明
-├── openclaw_bot.py            # Webhook 服务器（/hooks/agent）
-├── agent.py                   # BOM Agent 核心逻辑（Claude 工具调用循环）
-├── core/
-│   ├── config.py              # 数据源配置加载器（config.yaml → 环境变量）
-│   ├── db.py                  # 产品数据库 CRUD（深度合并 / 完整度追踪）
-│   ├── bom_loader.py          # 拆机 Excel 解析（自动识别 data/ 目录）
-│   ├── components_lib.py      # 标准件库 JSON CRUD
-│   └── feishu_sync.py         # 飞书多维表格同步（未配置时静默跳过）
-├── scripts/
-│   ├── gen_teardown.py        # 通用拆机分析 Excel 生成器（含 FCC ID.io + 网络补全）
-│   ├── build_components.py    # 拆机 Excel → teardown CSV + 标准件库
-│   ├── import_products.py     # 产品数据库 xlsx 批量导入
-│   └── start.py               # 服务启动入口
-├── config.yaml               # 数据源配置（飞书链接 / 本地路径，不入 git）
+├── SKILL.md                  # OpenClaw skill 元数据与配置说明
+├── openclaw_bot.py           # Webhook 服务器（/hooks/agent，端口 8090）
+├── agent.py                  # BOM Agent 主逻辑（Claude 工具调用循环）
+│
+├── core/                     # 运行时库（被 agent.py 直接调用）
+│   ├── config.py             # 配置加载（config.yaml → 函数接口）
+│   ├── db.py                 # 产品数据库读写（products_db.json，深度合并）
+│   ├── bom_loader.py         # 拆机数据只读（data/teardowns/*.csv）
+│   ├── components_lib.py     # 标准件库读写（data/lib/components_lib.csv）
+│   ├── model_aliases.py      # 国内/海外型号双向模糊匹配（FCC 搜索用）
+│   └── feishu_sync.py        # 飞书只写同步（本地写完后单向推送，未配置时跳过）
+│
+├── scripts/                  # 离线数据维护工具（手动运行，不被 agent 调用）
+│   ├── gen_teardown.py       # 生成拆机 CSV（FCC ID.io + 网络补全，需人工核准）
+│   ├── build_components.py   # 重建标准件库（teardown CSV → components_lib.csv）
+│   └── import_products.py    # 批量导入产品数据（CSV/xlsx → products_db.json）
+│
+├── config.yaml               # 数据源配置（飞书 obj_token / 本地路径，不入 git）
 ├── data/
-│   ├── products_db.json        # 产品规格数据库（含 last_updated）
-│   ├── teardowns/              # 各机型拆机 CSV
+│   ├── 产品数据库.csv          # 产品规格输入源（人工维护，固定列格式）
+│   ├── model_aliases.json    # 国内/海外型号映射表（Roborock 等品牌双名对照）
+│   ├── products_db.json      # 产品数据库运行时缓存（import_products.py 写入，Agent 读写）
+│   ├── teardowns/            # 各机型拆机 CSV（gen_teardown.py 输出，人工核准后入库）
 │   │   └── {机型}_teardown.csv
-│   ├── lib/
-│   │   └── components_lib.csv  # 标准件库（8桶分类，含 last_updated）
-│   └── {机型}_拆机分析.xlsx    # gen_teardown.py 输出的分析报告
+│   └── lib/
+│       └── components_lib.csv  # 标准件库（8桶分类，build_components.py 重建）
 └── requirements.txt
 ```
 
@@ -151,24 +144,19 @@ unit-bot/
 
 ```
 人工维护
-  飞书产品数据库  ──→  import_products.py  ──→  data/products_db.json
-  飞书拆机数据库  ──→  build_components.py ──→  data/teardowns/{机型}.csv
-                                           ──→  data/lib/components_lib.csv
+  data/产品数据库.csv  ──→  import_products.py  ──→  data/products_db.json
+                                                           ↕  Agent 实时读写
+                                                      飞书产品数据库（只写推送）
 
-Agent 自动调研
-  web_search  ──→  crawl_product_specs  ──→  save_product  ──→  products_db.json
-                                                            ──→  飞书产品数据库（同步）
-
-拆机报告生成（AI 辅助，含 FCC ID.io）
-  gen_teardown.py "机型名"
-    ├── FCC ID.io 内部照片 / 框图  ──┐
-    ├── 拆机报告 / 网络评测        ──┼→  teardowns/{机型}_teardown.csv
-    └── 元件价格补全（LCSC/Mouser）──┘
-                                      └→  {机型}_拆机分析.xlsx（双Sheet报告）
-  人工核准后 ──→  build_components.py  ──→  components_lib.csv
+拆机数据生成（AI 辅助，含 fccid.io）
+  scripts/gen_teardown.py "机型名"
+    ├── fccid.io 内部照片 / 框图  ──┐
+    ├── 拆机报告 / 网络评测        ──┼→  data/teardowns/{机型}_teardown.csv
+    └── 元件价格补全               ──┘
+  人工核准后 ──→  scripts/build_components.py  ──→  data/lib/components_lib.csv
 ```
 
-数据置信度：`teardown`（FCC照片/实物拆机）> `web`（网络调研）> `estimate`（行业基准推算）
+数据置信度：`database`（人工维护）> `teardown` / `fcc`（拆机/照片识别）> `web`（网络调研）> `estimate`（行业基准）
 
 ---
 
@@ -176,36 +164,15 @@ Agent 自动调研
 
 | # | 子系统 | 核心内容 | 旗舰机基准占比 |
 |---|--------|---------|-------------|
-| 1 | **算力与电子** | SoC 主板 · Wi-Fi/蓝牙模组 · 被动元件 | 10–12% |
-| 2 | **感知系统** | LDS/dToF · 视觉摄像头 · IMU · 超声波 | 10–13% |
-| 3 | **动力与驱动** | 吸尘风机 · 驱动轮模组 · 底盘升降 | 10–12% |
-| 4 | **清洁功能** | 拖布驱动 · 水泵 · 水箱 · 边刷 · 滚刷 | 13–17% |
-| 5 | **基站系统** | 集尘 · 水路 · 加热 · 基站电控 · 基站结构 | 15–20% ¹ |
-| 6 | **能源系统** | 电芯 · BMS · 充电电控 | 7–9% |
-| 7 | **整机结构 CMF** | 外壳注塑 · 喷涂/IMD · 模具摊销 | 10–13% |
-| 8 | **MVA + 软件授权** | 组装/测试人工 · 算法版税 · OS 授权 · 包材 | 9–13% |
+| 1 | **算力与电子** | SoC 主板 · Wi-Fi/蓝牙模组 · 被动元件 | ~11% |
+| 2 | **感知系统** | LDS/dToF · 视觉摄像头 · IMU · 超声波 | ~11% |
+| 3 | **动力与驱动** | 吸尘风机 · 驱动轮模组 · 底盘升降 | ~10% |
+| 4 | **清洁功能** | 拖布驱动 · 水泵 · 水箱 · 边刷 · 滚刷 | ~14% |
+| 5 | **基站系统** | 集尘 · 水路 · 加热 · 基站电控 · 基站结构 | ~22% ¹ |
+| 6 | **能源系统** | 电芯 · BMS · 充电电控 | ~8% |
+| 7 | **整机结构 CMF** | 外壳注塑 · 喷涂/IMD · 模具摊销 | ~11% |
+| 8 | **MVA + 软件授权** | 组装/测试人工 · 算法版税 · OS 授权 · 包材 | ~13% |
 
 整机 BOM 率参考：旗舰机约 **48–55%**（零售价）。
 
-> ¹ 基站系统占比随档位差异显著：入门机（¥2000–2500，仅充电+集尘）**5–8%**；中档机（¥2500–3500，自清洁+水路）**12–15%**；旗舰机（¥5000+，加热/烘干/多泵）**15–20%**。
-
-
-### 基站系统细化（第 5 桶）
-
-| 子模组 | 核心内容 | 占基站桶比例 |
-|--------|---------|------------|
-| 集尘模组 | 集尘风机 + 尘袋结构 + HEPA 滤网 | ~30% |
-| 水路模组 | 加热板 + 循环水泵 + 管路 + 污水箱 | ~30% |
-| 基站电控 | 基站主控板 + 触控屏/LED + 传感器 | ~20% |
-| 基站结构 CMF | 外壳注塑 + 喷涂 | ~20% |
-
-### 软件/授权隐形 BOM（第 8 桶）
-
-| 项目 | 单机成本参考 |
-|------|------------|
-| 导航/SLAM 算法版税 | ¥5–20 |
-| 语音/AI 推理授权 | ¥3–10 |
-| RTOS / 中间件 | ¥0–5 |
-| 云服务摊销 | ¥5–15 |
-
-合计约 **¥15–50 / 台**，旗舰机出厂 BOM 占比约 **0.5–2%**。
+> ¹ 基站系统占比随档位差异显著：入门机（<¥2000，仅充电+集尘）**~7%**；中档机（¥2000–4000，自清洁+水路）**~15%**；旗舰机（≥¥4000，加热/烘干/多泵）**~22%**。

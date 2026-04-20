@@ -44,16 +44,15 @@ COMPONENT_TEMPLATE: dict[str, Any] = {
 }
 
 CATEGORY_NAMES = {
-    # ── 硬件分层架构（Hardware Layer Architecture）──────────────
-    "navigation":        "导航模组（LDS/dToF/双目视觉）",
-    "perception_ctrl":   "感知与控制（SoC/NPU/摄像头/IMU）",
-    "power_motion":      "动力系统（风机/驱动轮/升降机构）",
-    "cleaning_system":   "清洁系统（滚刷/边刷/拖布升降）",
-    "battery_bms":       "续航系统（电芯/BMS）",
-    "dock_station":      "基站系统（集尘/上下水/加热）",
-    # ── CMF 与加工工艺 ───────────────────────────────────────────
-    "cmf_structure":     "机身结构与CMF（材质/注塑/喷涂/镭雕）",
-    "packaging":         "包装与耗材（尘袋/滤网/包材）",
+    # 对齐 8桶 BOM 框架
+    "compute_electronics": "算力与电子（SoC/MCU/Wi-Fi/被动元件）",
+    "perception":          "感知系统（LDS/dToF/摄像头/IMU/超声波）",
+    "power_motion":        "动力与驱动（风机/驱动轮/升降机构）",
+    "cleaning":            "清洁功能（拖布/水泵/水箱/边刷/滚刷）",
+    "dock_station":        "基站系统（集尘/上下水/加热/电控）",
+    "energy":              "能源系统（电芯/BMS/充电IC）",
+    "structure_cmf":       "整机结构CMF（外壳/注塑/喷涂/模具）",
+    "mva_software":        "MVA+软件授权（组装/版税/OS/包材）",
 }
 
 TIER_NAMES = {
