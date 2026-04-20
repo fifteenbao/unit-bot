@@ -19,38 +19,114 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# ── 配置读取 ────────────────────────────────────────────────────
+# ── 配置读取（config.yaml 优先，回退环境变量）──────────────────────
 
-APP_ID     = os.getenv("FEISHU_APP_ID", "")
-APP_SECRET = os.getenv("FEISHU_APP_SECRET", "")
+def _cfg():
+    try:
+        from core.config import (
+            get_feishu_product_url, get_feishu_teardown_url,
+            get_feishu_components_url,
+        )
+        from core.config import _load
+        raw = _load()
+        feishu = raw.get("feishu", {})
+        return {
+            "app_id":     feishu.get("app_id") or os.getenv("FEISHU_APP_ID", ""),
+            "app_secret": feishu.get("app_secret") or os.getenv("FEISHU_APP_SECRET", ""),
+            "product":    get_feishu_product_url(),
+            "teardown":   get_feishu_teardown_url(),
+            "components": get_feishu_components_url(),
+        }
+    except Exception:
+        return {
+            "app_id":     os.getenv("FEISHU_APP_ID", ""),
+            "app_secret": os.getenv("FEISHU_APP_SECRET", ""),
+            "product":    os.getenv("FEISHU_PRODUCT_TABLE_URL", ""),
+            "teardown":   os.getenv("FEISHU_TEARDOWN_TABLE_URL", ""),
+            "components": os.getenv("FEISHU_COMPONENTS_TABLE_URL", ""),
+        }
 
-PRODUCT_TABLE_URL    = os.getenv("FEISHU_PRODUCT_TABLE_URL", "")
-TEARDOWN_TABLE_URL   = os.getenv("FEISHU_TEARDOWN_TABLE_URL", "")
-COMPONENTS_TABLE_URL = os.getenv("FEISHU_COMPONENTS_TABLE_URL", "")
 
 _token_cache: dict[str, Any] = {}
+_wiki_resolved: dict[str, str] = {}   # wiki_token → app_token
 
 
 def _is_configured() -> bool:
-    return bool(APP_ID and APP_SECRET)
+    c = _cfg()
+    return bool(c["app_id"] and c["app_secret"])
+
+
+def _resolve_wiki_url(url: str) -> str | None:
+    """
+    将 /wiki/ 格式 URL 解析为 /base/ 格式 app_token。
+    需要 app_id / app_secret 已配置，结果缓存在进程内。
+    """
+    import requests
+    m = re.search(r"/wiki/([A-Za-z0-9]+)", url)
+    if not m:
+        return None
+    wiki_token = m.group(1)
+    if wiki_token in _wiki_resolved:
+        return _wiki_resolved[wiki_token]
+
+    token = _get_token()
+    if not token:
+        return None
+    try:
+        resp = requests.get(
+            "https://open.feishu.cn/open-apis/wiki/v2/nodes",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"token": wiki_token},
+            timeout=10,
+        )
+        data = resp.json()
+        if data.get("code") != 0:
+            logger.warning(f"Wiki 解析失败: {data.get('msg')} (wiki_token={wiki_token})")
+            return None
+        obj_token = data["data"]["node"].get("obj_token")
+        if obj_token:
+            _wiki_resolved[wiki_token] = obj_token
+        return obj_token
+    except Exception as e:
+        logger.warning(f"Wiki URL 解析异常: {e}")
+        return None
 
 
 def _parse_table_url(url: str) -> tuple[str, str, str] | None:
     """
-    从飞书表格链接解析 (host, app_token, table_id)
-    支持格式：https://xxx.feishu.cn/base/{app_token}?table={table_id}
+    从飞书表格链接解析 (host, app_token, table_id)。
+    支持：
+      /base/{app_token}?table={table_id}   — 多维表格直链
+      /wiki/{wiki_token}?sheet={sheet_id}  — Wiki 嵌入（自动解析，需 API 凭证）
     """
     if not url:
         return None
-    m = re.search(r"/base/([A-Za-z0-9]+)", url)
-    if not m:
-        return None
-    app_token = m.group(1)
-    t = re.search(r"[?&]table=([A-Za-z0-9_]+)", url)
-    table_id = t.group(1) if t else ""
+
     host_m = re.match(r"(https?://[^/]+)", url)
     host = host_m.group(1) if host_m else "https://open.feishu.cn"
-    return host, app_token, table_id
+
+    # /base/ 直链
+    m = re.search(r"/base/([A-Za-z0-9]+)", url)
+    if m:
+        app_token = m.group(1)
+        t = re.search(r"[?&]table=([A-Za-z0-9_]+)", url)
+        return host, app_token, t.group(1) if t else ""
+
+    # /wiki/ 格式 — 需要 API 凭证解析
+    if "/wiki/" in url:
+        if not _is_configured():
+            logger.warning(
+                "飞书链接为 Wiki 格式，需在 config.yaml 填写 feishu.app_id / app_secret 才能同步"
+            )
+            return None
+        app_token = _resolve_wiki_url(url)
+        if not app_token:
+            return None
+        # sheet= 参数映射为 table_id（用于区分同一 wiki 下多张表）
+        t = re.search(r"[?&]sheet=([A-Za-z0-9_]+)", url)
+        return host, app_token, t.group(1) if t else ""
+
+    return None
 
 
 def _get_token() -> str | None:
@@ -60,10 +136,13 @@ def _get_token() -> str | None:
     exp    = _token_cache.get("expires_at", 0)
     if cached and time.time() < exp - 60:
         return cached
+    c = _cfg()
+    if not c["app_id"] or not c["app_secret"]:
+        return None
     try:
         resp = requests.post(
             "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
-            json={"app_id": APP_ID, "app_secret": APP_SECRET},
+            json={"app_id": c["app_id"], "app_secret": c["app_secret"]},
             timeout=10,
         )
         data = resp.json()
@@ -128,25 +207,27 @@ def _upsert_records(table_url: str, records: list[dict], key_field: str) -> int:
 
 def sync_teardown(model: str, rows: list[dict]) -> None:
     """将单机型拆机数据同步到飞书拆机数据库"""
-    if not TEARDOWN_TABLE_URL:
+    url = _cfg()["teardown"]
+    if not url:
         return
-    n = _upsert_records(TEARDOWN_TABLE_URL, rows, key_field="name")
+    n = _upsert_records(url, rows, key_field="name")
     if n:
         logger.info(f"飞书拆机同步 [{model}]: {n} 条")
 
 
 def sync_components_lib(rows: list[dict]) -> None:
     """将标准件库同步到飞书标准件表"""
-    if not COMPONENTS_TABLE_URL:
+    url = _cfg()["components"]
+    if not url:
         return
-    n = _upsert_records(COMPONENTS_TABLE_URL, rows, key_field="id")
+    n = _upsert_records(url, rows, key_field="id")
     if n:
         logger.info(f"飞书标准件库同步: {n} 条")
 
 
 def sync_product(product_key: str, entry: dict) -> None:
     """将产品数据同步到飞书产品数据库（由 agent.tool_save_product 调用）"""
-    if not PRODUCT_TABLE_URL:
+    if not _cfg()["product"]:
         return
     import json
     flat = {

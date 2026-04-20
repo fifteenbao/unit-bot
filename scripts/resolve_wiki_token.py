@@ -5,13 +5,16 @@
 问题背景：
   多维表格嵌入在 Wiki 页面时，URL 格式为：
     https://xxx.feishu.cn/wiki/<wiki_token>
-  而配置需要的是 /base/ 格式的 app_token，两者不同。
+  而 Bitable API 需要的是 app_token，两者不同。
+  本脚本完成从 wiki URL → app_token + table_id 的解析，
+  并可选择直接写入根目录 config.yaml。
 
 用法：
   python3 scripts/resolve_wiki_token.py \
     --app-id cli_xxx \
     --app-secret xxx \
-    --wiki-url "https://vh4smebe3m.feishu.cn/wiki/AbCdEfGhIjKl"
+    --wiki-url "https://vh4smebe3m.feishu.cn/wiki/AbCdEfGhIjKl" \
+    --table-key product_table_url   # 写入 config.yaml 的字段名
 
   或直接传 wiki_token：
     python3 scripts/resolve_wiki_token.py \
@@ -21,8 +24,11 @@
 import argparse
 import re
 import sys
+from pathlib import Path
 
 import requests
+
+CONFIG_FILE = Path(__file__).parent.parent / "config.yaml"
 
 
 def get_tenant_token(app_id: str, app_secret: str) -> str:
@@ -74,6 +80,8 @@ def main():
     parser.add_argument("--app-secret", required=True, help="飞书应用 App Secret")
     parser.add_argument("--wiki-url",   help="Wiki 页面完整 URL")
     parser.add_argument("--wiki-token", help="Wiki Token（从 URL 中提取）")
+    parser.add_argument("--table-key",  help="写入 config.yaml 的字段名，如 product_table_url / teardown_table_url")
+    parser.add_argument("--write-config", action="store_true", help="将解析结果直接写入 config.yaml")
     args = parser.parse_args()
 
     # 提取 wiki_token
@@ -112,16 +120,40 @@ def main():
     if tables:
         print(f"\n   找到 {len(tables)} 张数据表：\n")
         for t in tables:
-            print(f"   表名: {t.get('name')}")
-            print(f"   Table ID: {t.get('table_id')}")
-            print()
-        print("💡 将以上 ID 填入 .env：")
-        print(f"   FEISHU_BITABLE_APP_TOKEN={obj_token}")
-        for t in tables:
-            print(f"   # {t.get('name')}")
-            print(f"   FEISHU_PRODUCTS_TABLE_ID={t.get('table_id')}   # 如果这是产品表")
+            print(f"   表名: {t.get('name')}  |  Table ID: {t.get('table_id')}")
     else:
         print("   未找到数据表，请确认多维表格内已创建数据表")
+
+    # ── 写入 config.yaml ─────────────────────────────────────────
+    if args.write_config or args.table_key:
+        table_key = args.table_key or "product_table_url"
+        _write_config(table_key, args.wiki_url or wiki_token, obj_token, tables)
+
+
+def _write_config(table_key: str, wiki_url: str, app_token: str, tables: list) -> None:
+    """将解析结果回写到 config.yaml"""
+    if not CONFIG_FILE.exists():
+        print(f"\n⚠️  未找到 {CONFIG_FILE}，跳过写入")
+        return
+
+    content = CONFIG_FILE.read_text(encoding="utf-8")
+
+    # 替换对应字段的值
+    pattern = rf'(\s+{re.escape(table_key)}:\s*)"[^"]*"'
+    replacement = rf'\1"{wiki_url}"'
+    new_content, n = re.subn(pattern, replacement, content)
+
+    if n == 0:
+        print(f"\n⚠️  config.yaml 中未找到字段 {table_key}，请手动填写")
+        return
+
+    CONFIG_FILE.write_text(new_content, encoding="utf-8")
+    print(f"\n✅ 已写入 config.yaml：{table_key} = {wiki_url}")
+    print(f"   (解析到 app_token: {app_token})")
+    if tables:
+        print("   数据表清单：")
+        for t in tables:
+            print(f"     {t.get('name')}  →  {t.get('table_id')}")
 
 
 if __name__ == "__main__":

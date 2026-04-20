@@ -9,20 +9,26 @@ metadata: {"openclaw": {"requires": {"bins": ["python3", "pip3"], "env": ["ANTHR
 
 # unit-bot — 扫地机器人 BOM 成本分析与技术选型
 
-## 数据库配置（首次使用必做）
+## 数据库配置（可选）
 
-本 skill 依赖两张飞书多维表格作为数据源，请在 `.env` 中配置对应链接：
+编辑根目录 `config.yaml`，填写飞书多维表格链接。**未配置时 Agent 自动以网络调研模式运行**，无需任何额外设置。
 
-```bash
-# 产品数据库（规格/价格/功能，人工维护）
-FEISHU_PRODUCT_TABLE_URL=https://your-feishu-domain/base/xxx?table=tbl_product
+```yaml
+feishu:
+  app_id: ""        # 飞书开放平台 App ID（同步写回时必填）
+  app_secret: ""    # 飞书开放平台 App Secret
 
-# 拆机数据库（PCB/电机/传感器级数据，实物拆机维护）
-FEISHU_TEARDOWN_TABLE_URL=https://your-feishu-domain/base/xxx?table=tbl_teardown
+  # 支持 /base/ 直链或 /wiki/ 格式，wiki 格式需填写 app_id/app_secret 自动解析
+  product_table_url: "https://your-domain.feishu.cn/wiki/xxx"
+  teardown_table_url: "https://your-domain.feishu.cn/wiki/xxx"
+  components_table_url: ""
 
+local:
+  product_xlsx: ""    # 本地产品数据库 xlsx（优先级高于飞书）
+  teardown_xlsx: ""   # 本地拆机 Excel
 ```
 
-> 未配置飞书链接时，Agent 以纯网络调研模式运行（规格层通过 web_search 获取，PCB/电机级数据标注为 estimate）。
+> 飞书链接未配置或凭证缺失时，同步操作静默跳过，本地 `data/` 数据不受影响。
 
 ### 飞书表格格式约定
 
@@ -117,25 +123,26 @@ PCB          主板          CPU               MR813        1
 
 ## 环境变量
 
-> Claude API 密钥由 OpenClaw 统一管理，无需单独配置。
+> Claude API 密钥和模型由 OpenClaw 统一管理，skill 无需单独配置。
 
 | 变量 | 必填 | 说明 |
 |------|------|------|
-| `FEISHU_PRODUCT_TABLE_URL` | 推荐 | 飞书产品数据库表格链接 |
-| `FEISHU_TEARDOWN_TABLE_URL` | 推荐 | 飞书拆机数据库表格链接 |
-| `BOM_EXCEL_FILE` | 可选 | 本地拆机 Excel 路径（覆盖飞书） |
-| `OPENCLAW_WEBHOOK_SECRET` | **强烈建议** | 请求验签密钥，防止局域网内其他设备调用 |
+| `OPENCLAW_WEBHOOK_SECRET` | 强烈建议 | 请求验签密钥，防止局域网内其他设备调用 |
 | `OPENCLAW_BOT_PORT` | 可选 | Webhook 服务端口（默认 8090） |
+
+飞书凭证和数据库链接均通过 `config.yaml` 配置，不再使用环境变量。
 
 ---
 
 ## 数据持久化
 
-| 目录 / 文件 | 内容 | 时间戳 |
-|------------|------|--------|
-| `data/products_db.json` | 产品规格数据库 | 每条记录含 `last_updated` |
-| `data/teardowns/{机型}_teardown_{日期}.csv` | 各机型拆机数据 | 文件名含生成日期，历史版本自动保留 |
-| `data/lib/components_lib.csv` | 标准件库（8桶分类） | 每行含 `last_updated` 列 |
+| 目录 / 文件 | 内容 |
+|------------|------|
+| `config.yaml` | 数据源配置（飞书链接 / 本地路径），不入 git |
+| `data/products_db.json` | 产品规格数据库，每条记录含 `last_updated` |
+| `data/teardowns/{机型}_teardown.csv` | 各机型拆机数据 |
+| `data/{机型}_拆机分析.xlsx` | gen_teardown.py 输出的分析报告 |
+| `data/lib/components_lib.csv` | 标准件库（8桶分类），每行含 `last_updated` |
 
 重启服务后数据不丢失。建议定期备份 `data/` 目录，或配置飞书同步作为云端备份。
 
