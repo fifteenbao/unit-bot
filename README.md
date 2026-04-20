@@ -64,22 +64,33 @@ openclaw skills add https://github.com/fifteenbao/unit-bot
 
 ## 数据库配置（首次使用）
 
-编辑 `data/config.yaml`，填写飞书多维表格链接或本地文件路径（二选一，本地文件优先）：
+编辑 `config.yaml`，填写飞书多维表格的 `obj_token` 或本地文件路径（二选一，本地文件优先）：
 
 ```yaml
 feishu:
-  product_table_url: "https://your-feishu-domain/base/xxx?table=tbl_product"
-  teardown_table_url: "https://your-feishu-domain/base/xxx?table=tbl_teardown"
-  components_table_url: "https://your-feishu-domain/base/xxx?table=tbl_components"
+  product_obj_token: ""      # 产品数据库 obj_token
+  teardown_obj_token: ""     # 拆机数据库 obj_token
+  components_obj_token: ""   # 标准件库 obj_token
 
 local:
   product_xlsx: ""       # 本地产品数据库 xlsx（填写后覆盖飞书）
   teardown_xlsx: ""      # 本地拆机 Excel
 ```
 
+**获取 obj_token**：飞书知识库（Wiki）链接需转换为多维表格的 `obj_token`（即 `app_token`），使用脚本一键解析：
+
+```bash
+python3 scripts/resolve_wiki_token.py \
+  --wiki-url "https://your-domain.feishu.cn/wiki/xxx" \
+  --table-key product_obj_token \
+  --write-config
+```
+
+> 参考：[飞书 Wiki 链接转多维表格 app_token](https://www.feishu.cn/community/article?id=7595138741669203138)
+
 未配置时以**纯网络调研模式**运行，规格层通过 web_search 获取，PCB/电机级数据标注为 `estimate`。
 
-> `data/config.yaml` 已加入 `.gitignore`，不会提交到仓库。
+> `config.yaml` 已加入 `.gitignore`，不会提交到仓库。
 
 ---
 

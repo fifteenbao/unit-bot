@@ -80,7 +80,7 @@ def main():
     parser.add_argument("--app-secret", required=True, help="飞书应用 App Secret")
     parser.add_argument("--wiki-url",   help="Wiki 页面完整 URL")
     parser.add_argument("--wiki-token", help="Wiki Token（从 URL 中提取）")
-    parser.add_argument("--table-key",  help="写入 config.yaml 的字段名，如 product_table_url / teardown_table_url")
+    parser.add_argument("--table-key",  help="写入 config.yaml 的字段名，如 product_obj_token / teardown_obj_token")
     parser.add_argument("--write-config", action="store_true", help="将解析结果直接写入 config.yaml")
     args = parser.parse_args()
 
@@ -126,30 +126,28 @@ def main():
 
     # ── 写入 config.yaml ─────────────────────────────────────────
     if args.write_config or args.table_key:
-        table_key = args.table_key or "product_table_url"
-        _write_config(table_key, args.wiki_url or wiki_token, obj_token, tables)
+        table_key = args.table_key or "product_obj_token"
+        _write_config(table_key, obj_token, tables)
 
 
-def _write_config(table_key: str, wiki_url: str, app_token: str, tables: list) -> None:
-    """将解析结果回写到 config.yaml"""
+def _write_config(table_key: str, obj_token: str, tables: list) -> None:
+    """将 obj_token 写回 config.yaml"""
     if not CONFIG_FILE.exists():
         print(f"\n⚠️  未找到 {CONFIG_FILE}，跳过写入")
         return
 
     content = CONFIG_FILE.read_text(encoding="utf-8")
 
-    # 替换对应字段的值
     pattern = rf'(\s+{re.escape(table_key)}:\s*)"[^"]*"'
-    replacement = rf'\1"{wiki_url}"'
+    replacement = rf'\1"{obj_token}"'
     new_content, n = re.subn(pattern, replacement, content)
 
     if n == 0:
-        print(f"\n⚠️  config.yaml 中未找到字段 {table_key}，请手动填写")
+        print(f"\n⚠️  config.yaml 中未找到字段 {table_key}，请手动填写：{table_key}: \"{obj_token}\"")
         return
 
     CONFIG_FILE.write_text(new_content, encoding="utf-8")
-    print(f"\n✅ 已写入 config.yaml：{table_key} = {wiki_url}")
-    print(f"   (解析到 app_token: {app_token})")
+    print(f"\n✅ 已写入 config.yaml：{table_key} = {obj_token}")
     if tables:
         print("   数据表清单：")
         for t in tables:

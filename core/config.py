@@ -40,19 +40,29 @@ def _str(val: Any) -> str:
 
 # ── 公开 API ──────────────────────────────────────────────────────
 
-def get_feishu_product_url() -> str:
-    v = _str(_load()["feishu"].get("product_table_url"))
-    return v or os.getenv("FEISHU_PRODUCT_TABLE_URL", "")
+def get_feishu_app_id() -> str:
+    v = _str(_load()["feishu"].get("app_id"))
+    return v or os.getenv("FEISHU_APP_ID", "")
 
 
-def get_feishu_teardown_url() -> str:
-    v = _str(_load()["feishu"].get("teardown_table_url"))
-    return v or os.getenv("FEISHU_TEARDOWN_TABLE_URL", "")
+def get_feishu_app_secret() -> str:
+    v = _str(_load()["feishu"].get("app_secret"))
+    return v or os.getenv("FEISHU_APP_SECRET", "")
 
 
-def get_feishu_components_url() -> str:
-    v = _str(_load()["feishu"].get("components_table_url"))
-    return v or os.getenv("FEISHU_COMPONENTS_TABLE_URL", "")
+def get_feishu_product_obj_token() -> str:
+    v = _str(_load()["feishu"].get("product_obj_token"))
+    return v or os.getenv("FEISHU_PRODUCT_OBJ_TOKEN", "")
+
+
+def get_feishu_teardown_obj_token() -> str:
+    v = _str(_load()["feishu"].get("teardown_obj_token"))
+    return v or os.getenv("FEISHU_TEARDOWN_OBJ_TOKEN", "")
+
+
+def get_feishu_components_obj_token() -> str:
+    v = _str(_load()["feishu"].get("components_obj_token"))
+    return v or os.getenv("FEISHU_COMPONENTS_OBJ_TOKEN", "")
 
 
 def get_local_product_xlsx() -> Path | None:

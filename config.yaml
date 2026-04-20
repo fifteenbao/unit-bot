@@ -3,15 +3,17 @@
 # 未填写的项留空字符串即可。
 
 # ── 飞书多维表格 ──────────────────────────────────────────────────
+# obj_token 即多维表格的 app_token，通过 wiki API 响应的 obj_token 字段获取。
+# 用 scripts/resolve_wiki_token.py 脚本一键解析并写入。
 feishu:
   # 产品数据库（规格 / 价格 / 功能布尔值，人工维护）
-  product_table_url: ""
+  product_obj_token: ""
 
   # 拆机数据库（PCB / 电机 / 传感器级数据，实物拆机维护）
-  teardown_table_url: ""
+  teardown_obj_token: ""
 
-  # 标准件库（build_components.py 生成后同步）
-  components_table_url: ""
+  # 标准件库
+  components_obj_token: ""
 
 # ── 本地文件（覆盖飞书配置）────────────────────────────────────────
 local:
