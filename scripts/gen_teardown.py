@@ -1,38 +1,38 @@
 #!/usr/bin/env python3
 """
-通用拆机分析 Excel 生成器（含 Claude API 网络数据补全）
+拆机 BOM 生成器 — 4-Stage Pipeline
+
+职责：爬取元器件型号 + 判断置信度
+价格来源：components_lib.csv（人工维护，权威来源）→ standard_parts.json（基准 fallback）
+不调用 API 查价；定价更新请维护 data/lib/components_lib.csv
 
 用法：
-    python scripts/gen_teardown.py "石头G30S Pro"              # 查找/生成CSV → 补全价格 → 输出Excel
+    python scripts/gen_teardown.py "石头G30S Pro"
     python scripts/gen_teardown.py "科沃斯X8 Pro" --msrp 6999
-    python scripts/gen_teardown.py "石头G30S Pro" --no-enrich  # 跳过价格网络补全
-    python scripts/gen_teardown.py "石头G30S Pro" --enrich     # 强制重新补全全部价格
     python scripts/gen_teardown.py --csv data/teardowns/xxx.csv "机型名"
 
-输出：data/{model_slug}_拆机分析.xlsx
-需要环境变量：ANTHROPIC_API_KEY
+输出：data/teardowns/{model_slug}_teardown.csv
+Pipeline：Stage 1 Discovery → Stage 2 Heuristic Enrichment → Stage 3 Price Lookup → Stage 4 Aggregate & Audit
 """
 from __future__ import annotations
 
 import argparse
 import csv
 import json
-import os
 import re
 import sys
 from pathlib import Path
 from typing import Optional
 
 import anthropic
-import openpyxl
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.utils import get_column_letter
 
-ROOT        = Path(__file__).parent.parent
-DATA_DIR    = ROOT / "data"
+ROOT         = Path(__file__).parent.parent
+DATA_DIR     = ROOT / "data"
 TEARDOWN_DIR = DATA_DIR / "teardowns"
+PARTS_FILE    = DATA_DIR / "standard_parts.json"
+COMP_LIB_FILE = DATA_DIR / "lib" / "components_lib.csv"
 
-# ── BOM 8桶 ──────────────────────────────────────────────────────
+# ── BOM 8桶 ───────────────────────────────────────────────────────
 BUCKETS = [
     ("compute_electronics", "计算/电子"),
     ("perception",          "感知"),
@@ -45,14 +45,14 @@ BUCKETS = [
 ]
 BUCKET_MAP = {k: v for k, v in BUCKETS}
 
-# 旗舰机各桶理论占比区间
+# 旗舰机各桶理论占比区间（BOM总额的百分比）
 BUCKET_THEORY = {
     "compute_electronics": (0.10, 0.12),
     "perception":          (0.10, 0.13),
     "power_motion":        (0.10, 0.12),
     "cleaning":            (0.13, 0.17),
     "energy":              (0.07, 0.09),
-    "dock_station":        (0.15, 0.20),
+    "dock_station":        (0.15, 0.25),
     "structure_cmf":       (0.10, 0.13),
     "mva_software":        (0.09, 0.13),
 }
@@ -62,53 +62,51 @@ CSV_FIELDS = [
     "spec", "manufacturer", "unit_price", "qty", "confidence", "product_source",
 ]
 
-# ── FCC 厂商代码 ───────────────────────────────────────────────
-# 格式：https://fccid.io/{grantee_code}  列出该品牌全部已认证设备
-# 单设备：https://fccid.io/{grantee_code}{product_code}
+# ── FCC 厂商代码 ───────────────────────────────────────────────────
 BRAND_FCC_CODE: dict[str, str] = {
-    "石头":     "2AN2O",   # Roborock
+    "石头":     "2AN2O",
     "roborock": "2AN2O",
-    "云鲸":     "2ARZZ",   # Narwal
+    "云鲸":     "2ARZZ",
     "narwal":   "2ARZZ",
-    "追觅":     "2AX54",   # Dreame
+    "追觅":     "2AX54",
     "dreame":   "2AX54",
-    "科沃斯":   "2A6HE",   # Ecovacs
+    "科沃斯":   "2A6HE",
     "ecovacs":  "2A6HE",
 }
 
 
 def _fcc_hint(model: str) -> str:
-    """
-    根据机型名称推断 FCC grantee code 并构造搜索提示。
-    返回空字符串表示品牌未知。
-    """
     low = model.lower()
     for keyword, code in BRAND_FCC_CODE.items():
         if keyword in low:
+            brand_map = {
+                "石头": "Roborock", "roborock": "Roborock",
+                "云鲸": "Narwal",   "narwal":   "Narwal",
+                "追觅": "Dreame",   "dreame":   "Dreame",
+                "科沃斯": "Ecovacs","ecovacs":  "Ecovacs",
+            }
+            brand = brand_map.get(keyword)
+            global_name = None
+            try:
+                from core.model_aliases import cn_to_global, find_alias
+                sys.path.insert(0, str(ROOT))
+                global_name = cn_to_global(model, brand)
+                if not global_name:
+                    hits = find_alias(model, brand, top_k=1)
+                    if hits and hits[0].score >= 0.5:
+                        global_name = hits[0].global_model
+            except Exception:
+                pass
+            search_name = global_name or model
             return (
                 f"FCC grantee code: {code}\n"
                 f"- 品牌设备列表: https://fccid.io/{code}\n"
-                f"- 在列表中找到型号最相近的设备，点击进入详情页\n"
-                f"- 用 web_fetch 抓取该设备的 Internal Photos（内部照片）和 "
-                f"Block Diagram（框图/原理图）页面，从照片中识别 PCB 上的芯片型号、\n"
-                f"  主板布局和主要元器件，从框图中提取系统架构和子系统划分"
+                f"- 建议搜索型号: 「{search_name}」"
+                + (f"（国内型号 {model} 的海外对应款）" if global_name else "")
+                + "\n- 进入最相近型号，用 web_fetch 抓取 Internal Photos 和 Block Diagram\n"
+                "- 从照片识别 PCB 芯片丝印（SoC/MCU/Wi-Fi/PMIC），从框图提取系统架构"
             )
     return ""
-
-# ── Excel 样式 ─────────────────────────────────────────────────
-CONF = {
-    "teardown": dict(bg="C6EFCE", fg="375623", label="实物拆机"),
-    "web":      dict(bg="BDD7EE", fg="1F4E79", label="网络调研"),
-    "estimate": dict(bg="FFEB9C", fg="9C5700", label="行业估算"),
-}
-HDR_FILL  = PatternFill("solid", fgColor="2F5496")
-HDR_FONT  = Font(bold=True, color="FFFFFF", size=10)
-GRAY_FILL = PatternFill("solid", fgColor="F2F2F2")
-GRAY_FONT = Font(size=10, color="595959", italic=True)
-_THIN     = Side(style="thin", color="BFBFBF")
-BORDER    = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
-FMT_MONEY = '#,##0.00'
-FMT_PCT   = '0.0%'
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -116,28 +114,27 @@ FMT_PCT   = '0.0%'
 # ══════════════════════════════════════════════════════════════════
 
 def _slug(model: str) -> str:
-    """'石头 G30S Pro' → '石头G30SPro'"""
     return re.sub(r"[\s\-]+", "", model)
 
 
-def _fill(bg: str) -> PatternFill:
-    return PatternFill("solid", fgColor=bg)
+def _norm_price(val) -> float:
+    try:
+        return float(val or 0)
+    except (ValueError, TypeError):
+        return 0.0
 
 
-def _c(ws, row: int, col: int, value=None, *,
-       bold=False, bg=None, fg="000000",
-       align="left", wrap=False, fmt=None,
-       italic=False, border=True):
-    c = ws.cell(row, col, value)
-    c.font = Font(bold=bold, color=fg, size=10, italic=italic)
-    if bg:
-        c.fill = _fill(bg)
-    c.alignment = Alignment(horizontal=align, vertical="center", wrap_text=wrap)
-    if fmt:
-        c.number_format = fmt
-    if border:
-        c.border = BORDER
-    return c
+def _norm_qty(val) -> int:
+    try:
+        return max(1, int(val or 1))
+    except (ValueError, TypeError):
+        return 1
+
+
+def _load_standard_parts() -> dict:
+    if PARTS_FILE.exists():
+        return json.loads(PARTS_FILE.read_text(encoding="utf-8"))
+    return {}
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -160,7 +157,6 @@ def save_csv(rows: list[dict], path: Path, model: str) -> None:
 
 
 def find_csv(model: str) -> Optional[Path]:
-    """按 slug 精确/模糊匹配 teardowns/ 下的 CSV 文件"""
     slug = _slug(model)
     exact = TEARDOWN_DIR / f"{slug}_teardown.csv"
     if exact.exists():
@@ -171,22 +167,8 @@ def find_csv(model: str) -> Optional[Path]:
     return None
 
 
-def _norm_price(val) -> float:
-    try:
-        return float(val or 0)
-    except (ValueError, TypeError):
-        return 0.0
-
-
-def _norm_qty(val) -> int:
-    try:
-        return max(1, int(val or 1))
-    except (ValueError, TypeError):
-        return 1
-
-
 # ══════════════════════════════════════════════════════════════════
-#  Claude API 工具调用循环（服务端 web_search / web_fetch）
+#  Claude API 工具调用循环
 # ══════════════════════════════════════════════════════════════════
 
 SERVER_TOOLS = [
@@ -195,28 +177,17 @@ SERVER_TOOLS = [
 ]
 
 
-def _run_web_agent(system: str, user: str,
-                   max_tokens: int = 8192) -> str:
-    """
-    用 Claude + 服务端 web_search/web_fetch 完成一次问答，返回最终文本。
-    - pause_turn：服务端工具尚未结束，继续循环
-    - end_turn：收集所有 text block 返回
-    """
+def _run_web_agent(system: str, user: str, max_tokens: int = 8192) -> str:
     client = anthropic.Anthropic()
     messages: list[dict] = [{"role": "user", "content": user}]
 
     while True:
         resp = client.messages.create(
             max_tokens=max_tokens,
-            system=[{
-                "type": "text",
-                "text": system,
-                "cache_control": {"type": "ephemeral"},
-            }],
+            system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
             tools=SERVER_TOOLS,
             messages=messages,
         )
-
         messages.append({"role": "assistant", "content": resp.content})
 
         if resp.stop_reason == "end_turn":
@@ -224,10 +195,8 @@ def _run_web_agent(system: str, user: str,
             return "\n".join(texts)
 
         if resp.stop_reason == "pause_turn":
-            # 服务端工具仍在执行，直接继续循环
             continue
 
-        # tool_use（客户端工具，此脚本不注册，通常不会到达）
         texts = [b.text for b in resp.content if getattr(b, "type", "") == "text"]
         if texts:
             return "\n".join(texts)
@@ -235,8 +204,6 @@ def _run_web_agent(system: str, user: str,
 
 
 def _extract_json_array(text: str) -> list[dict]:
-    """从 Claude 响应中提取第一个 JSON 数组"""
-    # 去除 ```json ... ``` 包裹
     text = re.sub(r"```(?:json)?\s*", "", text).strip().rstrip("`").strip()
     start = text.find("[")
     end   = text.rfind("]") + 1
@@ -246,50 +213,44 @@ def _extract_json_array(text: str) -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════════════
-#  从网络生成完整拆机清单
+#  Stage 1 — Discovery（多源调研，生成原始零件列表）
 # ══════════════════════════════════════════════════════════════════
 
-_GEN_SYSTEM = (
+_DISCOVERY_SYSTEM = (
     "你是扫地机器人硬件 BOM 成本分析专家，熟悉各品牌拆机报告、"
     "主要芯片厂商（全志、瑞芯微、比特大陆、TI、ST、InvenSense）及元件市场价。"
-    "你善于从 FCC ID.io 的内部照片中识别 PCB 芯片丝印和器件型号。"
-    "请严格按照指定 JSON 格式输出，不要输出任何额外文字。"
+    "擅长从 FCC ID.io 内部照片中识别 PCB 芯片丝印和器件型号。"
+    "数据源优先级：FCC ID.io 内部照片 > MyFixGuide拆机 > 知乎Robot森 > 我爱音频网 > 规格评测页。"
+    "严格按照指定 JSON 格式输出，不要输出任何额外文字。"
 )
 
-_GEN_PROMPT = """\
-请为 **{model}**（建议零售价约 {msrp} 元）生成一份完整的拆机 BOM 清单。
+_DISCOVERY_PROMPT = """\
+请为 **{model}**（建议零售价约 {msrp} 元）从多个数据源生成完整拆机 BOM 清单。
 
 **操作步骤（按顺序执行）**
 
-1. **FCC 认证文件**（优先级最高，可获取内部照片和原理图）
+1. **FCC 认证文件**（优先级最高）
 {fcc_hint}
-   - 若品牌未知，用 web_search 搜索 "{model} FCC ID" 获取认证编号
+   - 若品牌未收录，web_search "{model} FCC ID" 获取认证编号后再抓取
 
-2. **拆机报告搜索**
-   - web_search: "{model} 拆机报告 PCB 芯片" / "{model} teardown internals"
-   - web_search: "{model} disassembly main board chip"
+2. **拆机报告**
+   - web_search: "{model} site:myfixguide.com"
+   - web_search: "{model} 拆机报告 PCB 芯片 知乎"
+   - web_search: "{model} teardown internals disassembly"
 
-3. **零件价格查询**
-   - 对步骤1-2中识别出的关键芯片/模组，web_search 查批量采购价
-   - 重点查：雷达模组、SoC/CPU、NPU、结构光/ToF 模组、电池包
+3. **蓝牙SIG认证**（可确认芯片型号）
+   - web_search: "{model} site:bluetooth.com/specifications/assigned-numbers"
+   - web_search: "{model} bluetooth qualified"
 
-4. **综合所有来源**，填写下方 JSON
+4. **规格/评测补充**
+   - web_search: "{model} 规格参数 SoC CPU 雷达型号 传感器"
 
----
-
-**FCC ID.io 使用技巧**
-- 设备列表页：https://fccid.io/{{grantee_code}}
-- 进入设备详情后，优先查看：
-  - **Internal Photos**（内部照片）→ 从 PCB 丝印识别芯片型号
-  - **Block Diagram**（框图）→ 了解系统架构和子系统划分
-  - **External Photos**（外观照片）→ 确认产品版本
-  - **Test Report**（测试报告）→ 有时包含关键元件清单
-- 用 web_fetch 抓取照片页，仔细描述能看到的所有芯片丝印文字
+5. **综合以上来源**，输出下方 JSON
 
 ---
 
 **8个BOM桶说明**
-- compute_electronics: SoC/CPU、NPU、MCU、RAM/ROM、Wi-Fi/BT、PMIC、马达驱动IC、充电IC、被动元件、PCB板
+- compute_electronics: SoC/CPU、NPU、MCU、RAM/ROM、Wi-Fi/BT、PMIC、马达驱动IC、充电IC、被动元件、PCB
 - perception: 激光雷达、结构光/ToF、IMU、下视/沿墙/碰撞传感器、超声波
 - power_motion: 风机、驱动轮电机+齿轮箱+减震、底盘升降电机及机构
 - cleaning: 拖布盘/电机、水泵、机身水箱、滚刷/边刷本体、管路密封
@@ -304,13 +265,13 @@ _GEN_PROMPT = """\
 [
   {{
     "bom_bucket": "compute_electronics",
-    "section": "PCB",
-    "name": "CPU",
-    "model": "具体型号（从FCC照片/拆机报告识别，无法确定则填空字符串）",
-    "type": "类型描述",
-    "spec": "规格参数",
-    "manufacturer": "厂商",
-    "unit_price": 40,
+    "section": "主板",
+    "name": "SoC",
+    "model": "RK3588S",
+    "type": "主控芯片",
+    "spec": "八核A76+A55，6T NPU",
+    "manufacturer": "瑞芯微",
+    "unit_price": 0,
     "qty": 1,
     "confidence": "teardown"
   }}
@@ -320,24 +281,24 @@ confidence 说明：
 - teardown：从 FCC 内部照片/拆机照片直接识别（最高可信）
 - web：从网络评测/规格页确认
 - estimate：行业基准估算（无直接证据）
+- inferred：基于现有信息推断
 
-**目标**：总成本约 {bom_target} 元（零售价的 50%），覆盖全部 8 个桶，每桶至少 3 个主要零件。\
+**目标**：覆盖全部 8 个桶，每桶至少 3 个主要零件，unit_price 留 0（后续流水线补全）。\
 """
 
 
-def generate_from_web(model: str, msrp: float) -> list[dict]:
-    """调用 Claude API + web_search/web_fetch（含 FCC ID.io）从零生成拆机清单"""
-    print(f"  → 调用 Claude API 网络调研 {model} 拆机数据…")
+def stage1_discovery(model: str, msrp: float) -> list[dict]:
+    print(f"  [Stage 1] 多源调研 {model}…")
     fcc_hint = _fcc_hint(model)
     if fcc_hint:
-        print(f"  → 检测到 FCC 代码，将优先抓取 FCC ID.io 内部照片")
-    bom_target = int(msrp * 0.50)
-    prompt = _GEN_PROMPT.format(
-        model=model, msrp=int(msrp), bom_target=bom_target,
-        fcc_hint=fcc_hint if fcc_hint else "   （未知品牌，跳过，直接进行步骤2）",
-    )
+        print("  → 检测到 FCC 代码，优先抓取 FCC ID.io 内部照片")
 
-    text = _run_web_agent(_GEN_SYSTEM, prompt, max_tokens=8192)
+    prompt = _DISCOVERY_PROMPT.format(
+        model=model,
+        msrp=int(msrp),
+        fcc_hint=fcc_hint if fcc_hint else "   （品牌未收录，跳过 FCC，直接进行步骤2）",
+    )
+    text = _run_web_agent(_DISCOVERY_SYSTEM, prompt, max_tokens=8192)
     rows = _extract_json_array(text)
 
     for r in rows:
@@ -347,348 +308,332 @@ def generate_from_web(model: str, msrp: float) -> list[dict]:
         r["unit_price"] = _norm_price(r.get("unit_price"))
         r["qty"]        = _norm_qty(r.get("qty"))
 
-    print(f"  ✓ 生成 {len(rows)} 条零件记录")
+    print(f"  ✓ Stage 1 完成：{len(rows)} 条零件记录")
     return rows
 
 
 # ══════════════════════════════════════════════════════════════════
-#  网络补全缺失价格
+#  Stage 2 — Heuristic Enrichment（SoC 推导伴随件）
 # ══════════════════════════════════════════════════════════════════
 
-_ENRICH_SYSTEM = (
-    "你是扫地机器人元件价格专家，熟悉立创商城、LCSC、Mouser、嘉立创等平台的批量采购价。"
-    "如果零件有具体型号，优先在元件平台查询；"
-    "如果型号未知，可先从 FCC ID.io 内部照片确认型号再查价。"
-    "严格只输出 JSON 数组，不要其他任何文字。"
-)
-
-_ENRICH_PROMPT = """\
-以下是 **{model}** 拆机清单中价格缺失的零件，请通过 web_search 查询它们的市场价（人民币，\
-批量 1000+ pcs）。
-
-```json
-{items_json}
-```
-
-返回与输入**顺序一致**的 JSON 数组，每项包含：
-- name: 保持原样
-- unit_price: 查到的批量价（元），查不到则填行业基准估算值
-- manufacturer: 厂商（如原本已有则保持）
-- confidence: "web"（查到真实价格）或 "estimate"（行业估算）
-
-只输出 JSON 数组。\
-"""
-
-
-def enrich_prices(rows: list[dict], model: str, force: bool = False) -> list[dict]:
-    """调用 Claude + web_search 补全缺失的 unit_price / manufacturer"""
-    need = [
-        (i, r) for i, r in enumerate(rows)
-        if force or _norm_price(r.get("unit_price")) == 0
-    ]
-    if not need:
-        print("  → 所有零件已有价格，跳过网络补全")
+def stage2_heuristic_enrichment(rows: list[dict]) -> list[dict]:
+    """
+    根据 standard_parts.json heuristics，若识别到 SoC 型号，
+    自动补充 PMIC / RAM / ROM 等伴随件（避免遗漏但不重复添加）。
+    """
+    parts = _load_standard_parts()
+    heuristics: dict = parts.get("heuristics", {})
+    if not heuristics:
         return rows
 
-    print(f"  → {len(need)} 个零件价格缺失，调用 Claude API 补全…")
+    # 找已有 SoC 型号
+    existing_models = {(r.get("bom_bucket", ""), r.get("model", "").upper()) for r in rows}
+    existing_names  = {r.get("name", "").lower() for r in rows}
 
-    BATCH = 25
-    for b_start in range(0, len(need), BATCH):
-        batch = need[b_start : b_start + BATCH]
-        items = [
-            {
-                "name":         r.get("name", ""),
-                "model":        r.get("model", ""),
-                "type":         r.get("type", ""),
-                "spec":         r.get("spec", ""),
-                "manufacturer": r.get("manufacturer", ""),
-                "bom_bucket":   r.get("bom_bucket", ""),
-            }
-            for _, r in batch
-        ]
-        prompt = _ENRICH_PROMPT.format(
-            model=model,
-            items_json=json.dumps(items, ensure_ascii=False, indent=2),
-        )
-        try:
-            text    = _run_web_agent(_ENRICH_SYSTEM, prompt, max_tokens=4096)
-            results = _extract_json_array(text)
-        except Exception as e:
-            print(f"  ⚠ 批次 {b_start // BATCH + 1} 失败: {e}，跳过")
+    added = 0
+    for row in list(rows):
+        if row.get("bom_bucket") != "compute_electronics":
+            continue
+        soc_model = (row.get("model") or "").strip().upper()
+        if soc_model not in heuristics:
+            # 模糊匹配：RK3566 匹配 "rk3566"
+            for hkey in heuristics:
+                if hkey.upper() in soc_model or soc_model.startswith(hkey.upper()[:4]):
+                    soc_model = hkey.upper()
+                    break
+            else:
+                continue
+
+        rules = heuristics[soc_model.upper()] if soc_model.upper() in heuristics else heuristics.get(soc_model, {})
+        if not rules:
             continue
 
-        for j, (i, _) in enumerate(batch):
-            if j >= len(results):
-                break
-            res = results[j]
-            if _norm_price(res.get("unit_price")):
-                rows[i]["unit_price"] = _norm_price(res["unit_price"])
-            if res.get("manufacturer") and not rows[i].get("manufacturer"):
-                rows[i]["manufacturer"] = res["manufacturer"]
-            if res.get("confidence"):
-                rows[i]["confidence"] = res["confidence"]
+        # PMIC
+        pmic = rules.get("pmic")
+        if pmic and ("compute_electronics", pmic.upper()) not in existing_models and "pmic" not in existing_names:
+            rows.append({
+                "bom_bucket": "compute_electronics", "section": "主板",
+                "name": "PMIC", "model": pmic, "type": "电源管理",
+                "spec": f"配套 {soc_model} 多路 DC-DC+LDO",
+                "manufacturer": "瑞芯微" if pmic.startswith("RK") else "",
+                "unit_price": 0.0, "qty": 1, "confidence": "inferred",
+                "product_source": row.get("product_source", ""),
+            })
+            existing_models.add(("compute_electronics", pmic.upper()))
+            existing_names.add("pmic")
+            added += 1
 
-        print(f"  ✓ 批次 {b_start // BATCH + 1} 完成（{len(batch)} 条）")
+        # RAM
+        ram = rules.get("ram")
+        if ram and "ram" not in existing_names and "lpddr" not in " ".join(existing_names):
+            rows.append({
+                "bom_bucket": "compute_electronics", "section": "主板",
+                "name": "RAM", "model": "", "type": "内存",
+                "spec": ram, "manufacturer": "三星/海力士/美光",
+                "unit_price": 0.0, "qty": 1, "confidence": "inferred",
+                "product_source": row.get("product_source", ""),
+            })
+            existing_names.add("ram")
+            added += 1
 
+        # ROM
+        rom = rules.get("rom")
+        if rom and "rom" not in existing_names and "emmc" not in " ".join(existing_names):
+            rows.append({
+                "bom_bucket": "compute_electronics", "section": "主板",
+                "name": "ROM", "model": "", "type": "闪存",
+                "spec": rom, "manufacturer": "三星/Kingston",
+                "unit_price": 0.0, "qty": 1, "confidence": "inferred",
+                "product_source": row.get("product_source", ""),
+            })
+            existing_names.add("rom")
+            added += 1
+
+        # AI 授权（RK3588S 等高端 SoC）
+        if rules.get("ai_license") and "ai授权" not in existing_names and "算法版税" not in existing_names:
+            rows.append({
+                "bom_bucket": "mva_software", "section": "软件授权",
+                "name": "AI算法授权", "model": "", "type": "软件",
+                "spec": f"NPU 算法版税（{soc_model}平台）",
+                "manufacturer": "", "unit_price": 0.0, "qty": 1,
+                "confidence": "inferred",
+                "product_source": row.get("product_source", ""),
+            })
+            existing_names.add("ai授权")
+            added += 1
+
+    if added:
+        print(f"  [Stage 2] Heuristic 推导补充 {added} 条伴随件")
+    else:
+        print(f"  [Stage 2] Heuristic 推导：无需补充")
     return rows
 
 
 # ══════════════════════════════════════════════════════════════════
-#  Excel 生成（Sheet 1: 拆机清单 / Sheet 2: 成本对比）
+#  Stage 3 — Price Lookup（components_lib.csv → standard_parts.json）
+#
+#  价格不从网络查询，统一从人工维护的库表中匹配：
+#    1. components_lib.csv（cost_min/cost_max，权威来源）
+#    2. standard_parts.json（price_1k × discount_factor，基准 fallback）
+#  两者都未命中则 unit_price 保留 0，confidence 标注 "estimate"。
 # ══════════════════════════════════════════════════════════════════
 
-MAIN_COLS = [
-    ("BOM分类",      11),
-    ("模块",          8),
-    ("名称",         14),
-    ("型号",         15),
-    ("类型",         13),
-    ("规格",         24),
-    ("厂商",         11),
-    ("理论单价/元",   9),
-    ("数量",          5),
-    ("理论小计/元",   9),
-    ("实测价格/元",  11),
-    ("实测小计/元",  10),
-    ("价格偏差",      9),
-    ("数据来源",      9),
-]
-
-COMP_COLS = [
-    ("BOM分类",      14),
-    ("理论成本/元",  13),
-    ("理论占比%",    10),
-    ("实测成本/元",  13),
-    ("实测占比%",    10),
-    ("偏差金额/元",  13),
-    ("偏差%",         9),
-    ("校对备注",     22),
-]
+def _load_comp_lib() -> list[dict]:
+    """读取 components_lib.csv，返回行列表（字段: id/name/model_numbers/cost_min/cost_max/bom_bucket 等）"""
+    if not COMP_LIB_FILE.exists():
+        return []
+    with open(COMP_LIB_FILE, encoding="utf-8-sig") as f:
+        return list(csv.DictReader(f))
 
 
-def _build_sheet_main(ws, rows: list[dict], model: str) -> tuple[int, int]:
-    ws.title = "拆机清单"
+def _match_comp_lib(row: dict, lib_rows: list[dict]) -> Optional[dict]:
+    """
+    按优先级在 components_lib.csv 中查找匹配行：
+      1. model_numbers 字段包含 row["model"]（型号精确命中）
+      2. name 字段与 row["name"] 相似 + bom_bucket 相同
+      3. name 字段与 row["name"] 相似（跨桶模糊匹配）
+    返回匹配行或 None。
+    """
+    rmodel  = (row.get("model") or "").strip().lower()
+    rname   = (row.get("name")  or "").strip().lower()
+    rbucket = (row.get("bom_bucket") or "").strip()
 
-    ws.merge_cells("A1:N1")
-    t = ws.cell(1, 1, f"{model} · 拆机电控分析（置信度标注）")
-    t.font = Font(bold=True, size=13, color="1F3864")
-    t.alignment = Alignment(horizontal="center", vertical="center")
-    ws.row_dimensions[1].height = 26
+    best: Optional[dict] = None
+    best_score = 0
 
-    ws.merge_cells("A2:N2")
-    leg = ws.cell(
-        2, 1,
-        "置信度：  🟢 teardown 实物拆机（最高）  "
-        "🔵 web 网络调研  "
-        "🟡 estimate 行业估算（最低）  ‖  "
-        "K列「实测价格」请工程师依拆机结果填写，L/M 列自动计算",
-    )
-    leg.font = Font(italic=True, size=9, color="595959")
-    leg.alignment = Alignment(horizontal="left", vertical="center")
-    ws.row_dimensions[2].height = 18
+    for lib in lib_rows:
+        lmodels = (lib.get("model_numbers") or "").lower()
+        lname   = (lib.get("name") or "").strip().lower()
+        lbucket = (lib.get("bom_bucket") or "").strip()
 
-    ws.row_dimensions[3].height = 30
-    for ci, (hdr, w) in enumerate(MAIN_COLS, 1):
-        c = ws.cell(3, ci, hdr)
-        c.font = HDR_FONT
-        c.fill = HDR_FILL
-        c.alignment = Alignment(horizontal="center", vertical="center")
-        c.border = BORDER
-        ws.column_dimensions[get_column_letter(ci)].width = w
+        score = 0
+        # 型号命中（最高优先级）
+        if rmodel and rmodel in lmodels:
+            score = 100
+        # 名称子串命中 + 同桶
+        elif rname and (rname in lname or lname in rname):
+            score = 60 + (20 if lbucket == rbucket else 0)
+        # 名称首词命中
+        elif rname and lname:
+            rword = rname.split()[0] if rname.split() else rname
+            lword = lname.split()[0] if lname.split() else lname
+            if len(rword) >= 2 and rword == lword:
+                score = 30 + (10 if lbucket == rbucket else 0)
 
-    DATA_START = 4
-    r = DATA_START
-    CENTER_COLS = {8, 9, 10, 11, 12, 13}
+        if score > best_score:
+            best_score = score
+            best = lib
 
-    for row in rows:
-        conf  = (row.get("confidence") or "estimate").strip()
-        style = CONF.get(conf, CONF["estimate"])
-        bg, fg = style["bg"], style["fg"]
-
-        up  = _norm_price(row.get("unit_price"))
-        qty = _norm_qty(row.get("qty"))
-        bucket_label = BUCKET_MAP.get(row.get("bom_bucket", ""), row.get("bom_bucket", ""))
-
-        vals = [
-            bucket_label,
-            row.get("section", ""),
-            row.get("name", ""),
-            row.get("model", ""),
-            row.get("type", ""),
-            row.get("spec", ""),
-            row.get("manufacturer", ""),
-            up or None,
-            qty,
-        ]
-        for ci, v in enumerate(vals, 1):
-            _c(ws, r, ci, v,
-               bg=bg, fg=fg,
-               align="center" if ci in CENTER_COLS else "left",
-               wrap=(ci == 6),
-               fmt=FMT_MONEY if ci == 8 else None)
-
-        # J 理论小计
-        jc = ws.cell(r, 10)
-        jc.fill = _fill(bg); jc.border = BORDER
-        jc.alignment = Alignment(horizontal="center", vertical="center")
-        jc.number_format = FMT_MONEY
-        jc.font = Font(color=fg, size=10)
-        jc.value = (up * qty) if up else None
-
-        # K 实测价格（工程师填写）
-        kc = ws.cell(r, 11)
-        kc.fill = GRAY_FILL; kc.border = BORDER
-        kc.alignment = Alignment(horizontal="center", vertical="center")
-        kc.number_format = FMT_MONEY; kc.font = GRAY_FONT
-
-        # L 实测小计
-        lc = ws.cell(r, 12, f'=IF(K{r}="","",K{r}*I{r})')
-        lc.fill = GRAY_FILL; lc.border = BORDER
-        lc.alignment = Alignment(horizontal="center", vertical="center")
-        lc.number_format = FMT_MONEY; lc.font = GRAY_FONT
-
-        # M 偏差
-        mc = ws.cell(r, 13, f'=IFERROR((L{r}-J{r})/J{r},"")')
-        mc.fill = GRAY_FILL; mc.border = BORDER
-        mc.alignment = Alignment(horizontal="center", vertical="center")
-        mc.number_format = FMT_PCT; mc.font = GRAY_FONT
-
-        # N 数据来源
-        _c(ws, r, 14, style["label"], bg=bg, fg=fg, align="center")
-
-        ws.row_dimensions[r].height = 18
-        r += 1
-
-    ws.freeze_panes = "A4"
-    return DATA_START, r - 1
+    return best if best_score >= 30 else None
 
 
-def _build_sheet_comparison(ws, rows: list[dict], model: str,
-                             msrp: float, ds: int, de: int) -> None:
-    ws.title = "成本对比"
+def stage3_price_lookup(rows: list[dict]) -> list[dict]:
+    """
+    从 components_lib.csv（权威）和 standard_parts.json（fallback）查价，
+    填入 unit_price。不调用任何网络 API。
+    """
+    lib_rows   = _load_comp_lib()
+    parts      = _load_standard_parts()
+    disc_factors = parts.get("discount_factors", {})
 
-    ws.merge_cells("A1:H1")
-    t = ws.cell(1, 1, f"{model} · 理论成本 vs 实测成本 — 分类对比")
-    t.font = Font(bold=True, size=13, color="1F3864")
-    t.alignment = Alignment(horizontal="center", vertical="center")
-    ws.row_dimensions[1].height = 26
+    # 从 standard_parts 展开所有条目列表
+    std_entries: list[dict] = []
+    for v in parts.values():
+        if isinstance(v, list):
+            std_entries.extend(v)
 
-    ws.merge_cells("A2:H2")
-    note = ws.cell(
-        2, 1,
-        f"零售价 {int(msrp)} 元，旗舰机 BOM 率约 50%（理论总成本 ≈ {int(msrp*0.5)} 元）。"
-        "理论成本 = AI 估算；实测成本 = 工程师填写「拆机清单」K列后自动汇总。",
-    )
-    note.font = Font(italic=True, size=9, color="595959")
-    note.alignment = Alignment(horizontal="left", vertical="center")
-    ws.row_dimensions[2].height = 18
+    hit_csv = hit_std = miss = 0
 
-    ws.row_dimensions[3].height = 30
-    for ci, (hdr, w) in enumerate(COMP_COLS, 1):
-        c = ws.cell(3, ci, hdr)
-        c.font = HDR_FONT; c.fill = HDR_FILL
-        c.alignment = Alignment(horizontal="center", vertical="center")
-        c.border = BORDER
-        ws.column_dimensions[get_column_letter(ci)].width = w
+    for r in rows:
+        if _norm_price(r.get("unit_price")) > 0:
+            continue  # 已有价格（Stage 1 直接给出的），保留
 
-    # 各桶理论成本
-    theory: dict[str, float] = {k: 0.0 for k, _ in BUCKETS}
-    for row in rows:
-        bkt = row.get("bom_bucket", "").strip()
-        total = _norm_price(row.get("unit_price")) * _norm_qty(row.get("qty"))
-        if bkt in theory:
-            theory[bkt] += total
+        # ── 优先：components_lib.csv ──────────────────────────────
+        lib_match = _match_comp_lib(r, lib_rows)
+        if lib_match:
+            cost_min = _norm_price(lib_match.get("cost_min"))
+            cost_max = _norm_price(lib_match.get("cost_max"))
+            if cost_min or cost_max:
+                # 取中点；若只有单侧则用该值
+                if cost_min and cost_max:
+                    r["unit_price"] = round((cost_min + cost_max) / 2, 2)
+                else:
+                    r["unit_price"] = cost_min or cost_max
+                if not r.get("manufacturer") and lib_match.get("suppliers"):
+                    r["manufacturer"] = lib_match["suppliers"].split("/")[0].strip()
+                # 置信度升级（来自人工维护的 CSV）
+                r["confidence"] = lib_match.get("confidence") or "web"
+                hit_csv += 1
+                continue
 
-    total_theory = sum(theory.values())
+        # ── Fallback：standard_parts.json ────────────────────────
+        rmodel  = (r.get("model") or "").strip().upper()
+        rname   = (r.get("name")  or "").strip().lower()
+        rspec   = (r.get("spec")  or "").strip().lower()
+        bucket  = r.get("bom_bucket", "")
 
-    r = 4
+        best_std: Optional[dict] = None
+        for entry in std_entries:
+            emodel = (entry.get("model") or "").strip().upper()
+            ename  = (entry.get("name")  or "").strip().lower()
+            espec  = (entry.get("spec")  or "").strip().lower()
+
+            if rmodel and emodel and rmodel == emodel:
+                best_std = entry
+                break
+            if ename and (ename in rname or rname in ename):
+                if not best_std:
+                    best_std = entry
+                if espec and any(kw.strip() in rspec for kw in espec.split("，")[:2] if len(kw.strip()) > 1):
+                    best_std = entry
+                    break
+
+        if best_std and best_std.get("price_1k"):
+            factor_key = (
+                "chip"      if bucket == "compute_electronics" else
+                "sensor"    if bucket == "perception"          else
+                "motor"     if bucket in ("power_motion", "cleaning", "dock_station") else
+                "battery"   if bucket == "energy"             else
+                "structure" if bucket == "structure_cmf"      else
+                "mva"
+            )
+            factor = disc_factors.get(factor_key, 1.0)
+            r["unit_price"] = round(best_std["price_1k"] * factor, 2)
+            if not r.get("manufacturer") and best_std.get("manufacturer"):
+                r["manufacturer"] = best_std["manufacturer"]
+            if r.get("confidence") in ("", "estimate"):
+                r["confidence"] = "estimate"
+            hit_std += 1
+        else:
+            miss += 1
+
+    total = len(rows)
+    print(f"  [Stage 3] 价格查表：CSV命中 {hit_csv}，基准命中 {hit_std}，未匹配 {miss}（共 {total} 条）")
+    if miss:
+        print(f"  → {miss} 条 unit_price=0，请在 components_lib.csv 补充后重新运行")
+    return rows
+
+
+# ══════════════════════════════════════════════════════════════════
+#  Stage 4 — Aggregate & Audit（8桶汇总 + ±5% 偏差告警）
+# ══════════════════════════════════════════════════════════════════
+
+def stage4_aggregate_audit(rows: list[dict], msrp: float) -> dict:
+    """
+    汇总各桶成本，与理论区间对比，输出告警。
+    返回 audit_report dict（同时打印到控制台）。
+    """
+    bom_rate = 0.50 if msrp >= 4000 else 0.58 if msrp < 2000 else 0.52
+    total_theory = msrp * bom_rate
+
+    bucket_totals: dict[str, float] = {k: 0.0 for k, _ in BUCKETS}
+    for r in rows:
+        bkt = r.get("bom_bucket", "").strip()
+        total = _norm_price(r.get("unit_price")) * _norm_qty(r.get("qty"))
+        if bkt in bucket_totals:
+            bucket_totals[bkt] += total
+
+    total_actual = sum(bucket_totals.values())
+
+    print(f"\n  [Stage 4] 8桶成本汇总（理论总额 ¥{total_theory:.0f}，实际 ¥{total_actual:.0f}）")
+    print(f"  {'桶':16s} {'理论区间':14s} {'实际':8s} {'占比':6s} {'状态'}")
+    print(f"  {'-'*60}")
+
+    alerts = []
+    bucket_report = {}
     for bkt, label in BUCKETS:
-        th     = theory.get(bkt, 0.0)
-        th_pct = th / total_theory if total_theory else 0.0
-        lo, hi = BUCKET_THEORY.get(bkt, (0, 0))
+        actual  = bucket_totals.get(bkt, 0.0)
+        lo_pct, hi_pct = BUCKET_THEORY.get(bkt, (0, 0))
+        lo = total_theory * lo_pct
+        hi = total_theory * hi_pct
+        pct = actual / total_theory if total_theory else 0
 
-        _c(ws, r, 1, label, bold=True)
+        if actual == 0:
+            status = "⚠ 缺数据"
+            alerts.append(f"{label}（{bkt}）：无零件数据，桶合计为 ¥0")
+        elif actual < lo * 0.95:
+            diff_pct = (lo - actual) / lo * 100
+            status = f"↓ 偏低 {diff_pct:.0f}%"
+            alerts.append(f"{label}：¥{actual:.0f} 低于理论下限 ¥{lo:.0f}（偏低 {diff_pct:.0f}%），可能漏件或价格偏低")
+        elif actual > hi * 1.05:
+            diff_pct = (actual - hi) / hi * 100
+            status = f"↑ 偏高 {diff_pct:.0f}%"
+            alerts.append(f"{label}：¥{actual:.0f} 高于理论上限 ¥{hi:.0f}（偏高 {diff_pct:.0f}%），请核实是否包含重复件")
+        else:
+            status = "✓ 正常"
 
-        bc = ws.cell(r, 2, th)
-        bc.number_format = FMT_MONEY; bc.border = BORDER
-        bc.alignment = Alignment(horizontal="center", vertical="center")
-        bc.font = Font(size=10)
+        print(f"  {label:16s} ¥{lo:.0f}~{hi:.0f:6.0f}   ¥{actual:6.0f}  {pct:.0%}  {status}")
+        bucket_report[bkt] = {
+            "label": label,
+            "actual_cny": round(actual, 2),
+            "theory_range": [round(lo, 2), round(hi, 2)],
+            "pct": round(pct * 100, 1),
+            "status": status,
+        }
 
-        cc = ws.cell(r, 3, th_pct)
-        cc.number_format = FMT_PCT; cc.border = BORDER
-        cc.alignment = Alignment(horizontal="center", vertical="center")
-        cc.font = Font(size=10)
+    print(f"  {'-'*60}")
+    print(f"  {'合计':16s} ¥{total_theory:.0f}        ¥{total_actual:.0f}")
 
-        # D 实测成本 SUMIF
-        total_r = 4 + len(BUCKETS)
-        dc = ws.cell(r, 4,
-            f"=SUMIF('拆机清单'!$A${ds}:$A${de},A{r},'拆机清单'!$L${ds}:$L${de})")
-        dc.number_format = FMT_MONEY; dc.border = BORDER
-        dc.fill = GRAY_FILL; dc.font = GRAY_FONT
-        dc.alignment = Alignment(horizontal="center", vertical="center")
+    if alerts:
+        print(f"\n  [Stage 4] ⚠ 告警（{len(alerts)} 条）：")
+        for a in alerts:
+            print(f"    • {a}")
 
-        # E 实测占比
-        ec = ws.cell(r, 5, f'=IFERROR(D{r}/$D${total_r},"")')
-        ec.number_format = FMT_PCT; ec.border = BORDER
-        ec.fill = GRAY_FILL; ec.font = GRAY_FONT
-        ec.alignment = Alignment(horizontal="center", vertical="center")
-
-        # F 偏差金额
-        fc = ws.cell(r, 6, f'=IFERROR(D{r}-B{r},"")')
-        fc.number_format = FMT_MONEY; fc.border = BORDER
-        fc.fill = GRAY_FILL; fc.font = GRAY_FONT
-        fc.alignment = Alignment(horizontal="center", vertical="center")
-
-        # G 偏差%
-        gc = ws.cell(r, 7, f'=IFERROR((D{r}-B{r})/B{r},"")')
-        gc.number_format = FMT_PCT; gc.border = BORDER
-        gc.fill = GRAY_FILL; gc.font = GRAY_FONT
-        gc.alignment = Alignment(horizontal="center", vertical="center")
-
-        # H 理论区间备注
-        range_note = f"理论区间 {lo:.0%}–{hi:.0%}" if (lo or hi) else ""
-        _c(ws, r, 8, range_note, italic=True, fg="595959")
-
-        ws.row_dimensions[r].height = 22
-        r += 1
-
-    # 合计行
-    end = r - 1
-    _c(ws, r, 1, "合 计", bold=True, align="center", bg="DCE6F1", fg="1F3864")
-    for ci, (val, fmt, fill) in enumerate([
-        (f"=SUM(B4:B{end})",             FMT_MONEY, None),
-        (1.0,                             FMT_PCT,   None),
-        (f"=SUM(D4:D{end})",             FMT_MONEY, "F2F2F2"),
-        (f'=IFERROR(D{r}/D{r},"")',      FMT_PCT,   "F2F2F2"),
-        (f'=IFERROR(D{r}-B{r},"")',      FMT_MONEY, "F2F2F2"),
-        (f'=IFERROR((D{r}-B{r})/B{r},"")' , FMT_PCT, "F2F2F2"),
-    ], start=2):
-        c = ws.cell(r, ci, val)
-        c.number_format = fmt; c.border = BORDER
-        c.font = Font(bold=True, size=10, color="595959" if fill else "1F3864")
-        c.fill = _fill(fill if fill else "DCE6F1")
-        c.alignment = Alignment(horizontal="center", vertical="center")
-    _c(ws, r, 8, "", bg="DCE6F1")
-    ws.row_dimensions[r].height = 22
-    ws.freeze_panes = "A4"
-
-
-def build_excel(rows: list[dict], model: str, msrp: float, out_path: Path) -> None:
-    wb = openpyxl.Workbook()
-    ws_main = wb.active
-    ds, de = _build_sheet_main(ws_main, rows, model)
-    ws_comp = wb.create_sheet()
-    _build_sheet_comparison(ws_comp, rows, model, msrp, ds, de)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(out_path)
+    return {
+        "msrp": msrp,
+        "bom_rate": bom_rate,
+        "total_theory_cny": round(total_theory, 2),
+        "total_actual_cny": round(total_actual, 2),
+        "buckets": bucket_report,
+        "alerts": alerts,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════
-#  MSRP 自动查询
+#  MSRP 查询
 # ══════════════════════════════════════════════════════════════════
 
 def _lookup_msrp_from_db(model: str) -> Optional[float]:
-    """从 products_db.json 读取零售价"""
     db_path = DATA_DIR / "products_db.json"
     if not db_path.exists():
         return None
@@ -706,7 +651,6 @@ def _lookup_msrp_from_db(model: str) -> Optional[float]:
 
 
 def lookup_msrp_from_web(model: str) -> float:
-    """用 Claude + web_search 查询零售价，失败返回 5000"""
     print(f"  → 查询 {model} 零售价…")
     try:
         text = _run_web_agent(
@@ -726,15 +670,34 @@ def lookup_msrp_from_web(model: str) -> float:
 #  主流程
 # ══════════════════════════════════════════════════════════════════
 
+def run_pipeline(model: str, msrp: float,
+                 existing_csv: Optional[Path] = None) -> tuple[list[dict], dict]:
+    """完整执行 4-Stage Pipeline，返回 (rows, audit_report)。"""
+    # Stage 1: Discovery
+    if existing_csv and existing_csv.exists():
+        rows = load_csv(existing_csv)
+        print(f"  ✓ 加载现有 CSV: {existing_csv.name}（{len(rows)} 条）")
+    else:
+        rows = stage1_discovery(model, msrp)
+
+    # Stage 2: Heuristic Enrichment
+    rows = stage2_heuristic_enrichment(rows)
+
+    # Stage 3: Price Lookup（components_lib.csv → standard_parts.json）
+    rows = stage3_price_lookup(rows)
+
+    # Stage 4: Aggregate & Audit
+    audit = stage4_aggregate_audit(rows, msrp)
+
+    return rows, audit
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="通用拆机分析 Excel 生成器")
+    parser = argparse.ArgumentParser(description="拆机 BOM 生成器 — 4-Stage Pipeline")
     parser.add_argument("model", nargs="?", help="机型名称，如 '石头G30S Pro'")
-    parser.add_argument("--msrp", type=float, help="建议零售价（元），不传则自动查询")
-    parser.add_argument("--csv", type=Path, help="指定现有 CSV 路径（可选）")
-    parser.add_argument("--out", type=Path, help="输出 Excel 路径（默认 data/{slug}_拆机分析.xlsx）")
-    parser.add_argument("--enrich", action="store_true", help="强制重新补全所有价格字段")
-    parser.add_argument("--no-enrich", dest="no_enrich", action="store_true",
-                        help="跳过价格网络补全")
+    parser.add_argument("--msrp",    type=float, help="建议零售价（元），不传则自动查询")
+    parser.add_argument("--csv",     type=Path,  help="指定现有 CSV 路径（跳过 Stage 1）")
+    parser.add_argument("--out",     type=Path,  help="输出 CSV 路径（默认 data/teardowns/{slug}_teardown.csv）")
     args = parser.parse_args()
 
     if not args.model and not args.csv:
@@ -743,63 +706,33 @@ def main() -> None:
     model = args.model or args.csv.stem.replace("_teardown", "").replace("_", " ")
     slug  = _slug(model)
 
-    # ── 1. 解析 MSRP ────────────────────────────────────────────
-    msrp = args.msrp
-    if not msrp:
-        msrp = _lookup_msrp_from_db(model)
+    # 解析 MSRP
+    msrp = args.msrp or _lookup_msrp_from_db(model)
     if not msrp and not args.no_enrich:
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if api_key:
-            msrp = lookup_msrp_from_web(model)
+        msrp = lookup_msrp_from_web(model)
     msrp = msrp or 5000.0
 
-    # ── 2. 解析输出路径 ──────────────────────────────────────────
-    out_path = args.out or DATA_DIR / f"{slug}_拆机分析.xlsx"
+    # 输出路径
+    csv_out = args.out or TEARDOWN_DIR / f"{slug}_teardown.csv"
 
-    print(f"\n机型: {model}  |  零售价: {msrp:.0f} 元  |  输出: {out_path.name}")
+    print(f"\n机型: {model}  |  零售价: {msrp:.0f} 元  |  输出: {csv_out.name}")
+    print("=" * 60)
 
-    # ── 3. 加载或生成 CSV ────────────────────────────────────────
-    csv_path = args.csv
-    rows: list[dict] = []
-    need_generate = False
+    # 执行 Pipeline
+    rows, audit = run_pipeline(
+        model=model,
+        msrp=msrp,
+        existing_csv=args.csv,
+    )
 
-    if csv_path and csv_path.exists():
-        rows = load_csv(csv_path)
-        print(f"  ✓ 加载 CSV: {csv_path.name}（{len(rows)} 条）")
-    else:
-        csv_path = find_csv(model)
-        if csv_path:
-            rows = load_csv(csv_path)
-            print(f"  ✓ 找到 CSV: {csv_path.name}（{len(rows)} 条）")
-        else:
-            need_generate = True
+    # 保存 CSV
+    save_csv(rows, csv_out, model)
+    print(f"\n✓ 写出 → {csv_out}\n")
 
-    if need_generate:
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            print("  ✗ 未找到 CSV 且 ANTHROPIC_API_KEY 未设置，无法生成数据")
-            sys.exit(1)
-        print(f"  → 未找到 {model} 的拆机 CSV，从网络生成…")
-        rows = generate_from_web(model, msrp)
-        csv_path = TEARDOWN_DIR / f"{slug}_teardown.csv"
-        save_csv(rows, csv_path, model)
-        print(f"  ✓ 已保存 CSV → {csv_path}")
-
-    # ── 4. 价格补全 ───────────────────────────────────────────────
-    if not args.no_enrich:
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if api_key:
-            rows = enrich_prices(rows, model, force=args.enrich)
-            # 回写更新后的 CSV
-            if csv_path:
-                save_csv(rows, csv_path, model)
-                print(f"  ✓ 已更新 CSV → {csv_path.name}")
-        else:
-            print("  → ANTHROPIC_API_KEY 未设置，跳过价格补全")
-
-    # ── 5. 生成 Excel ────────────────────────────────────────────
-    build_excel(rows, model, msrp, out_path)
-    print(f"\n写出 → {out_path}\n")
+    # 打印汇总
+    print(f"总计 {len(rows)} 条零件，BOM 估算 ¥{audit['total_actual_cny']:.0f} / 零售价 ¥{msrp:.0f}")
+    if audit["alerts"]:
+        print(f"⚠ {len(audit['alerts'])} 条告警，请核实后人工核准入库")
 
 
 if __name__ == "__main__":

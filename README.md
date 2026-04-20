@@ -4,10 +4,6 @@
 
 支持作为 **OpenClaw skill** 一键安装，接入飞书 / Slack / WhatsApp / Telegram / Discord 等任意频道使用。
 
-- [ ] 拆机数据库、成本占比优化
-- [ ] 动态 VAVE，增加"成本替换矩阵"
-- [ ] CMF 与加工费（MVA）的量化公式，基于克重的成本估算脚本
-
 ---
 
 ## 使用示例
@@ -19,6 +15,7 @@
 自动执行 7 步流程，输出：
 - 核心技术亮点（差异化件清单）
 - 8 桶 BOM 成本拆解表（含各桶估算金额与零售价占比）
+- 拆机 BOM CSV（`data/teardowns/{机型}_teardown.csv`）
 - 供应链分析：核心件供应商 + 可降级替代方案 + 节省金额
 - 竞品差异：vs 同价位产品 2–3 个关键成本分歧点
 
@@ -78,7 +75,7 @@ local:
   product_csv: ""            # 产品数据库 CSV 路径（填写后可用 import_products.py 导入）
 ```
 
-> `obj_token` 即多维表格的 `app_token`。若表格嵌入在飞书知识库（Wiki）中，需先从 Wiki 链接解析出 `obj_token`，参考：[飞书 Wiki 链接转多维表格 app_token](https://www.feishu.cn/community/article?id=7595138741669203138)
+> `obj_token` 即多维表格的 `app_token`。若表格嵌入在飞书知识库（Wiki）中，需先从 Wiki 链接解析出 `obj_token`。
 
 > `config.yaml` 已加入 `.gitignore`，不会提交到仓库。
 
@@ -101,19 +98,20 @@ unit-bot/
 │   └── feishu_sync.py        # 飞书只写同步（本地写完后单向推送，未配置时跳过）
 │
 ├── scripts/                  # 离线数据维护工具（手动运行，不被 agent 调用）
-│   ├── gen_teardown.py       # 生成拆机 CSV（FCC ID.io + 网络补全，需人工核准）
+│   ├── gen_teardown.py       # 生成拆机 CSV（4-Stage Pipeline，需人工核准）
 │   ├── build_components.py   # 重建标准件库（teardown CSV → components_lib.csv）
-│   └── import_products.py    # 批量导入产品数据（CSV/xlsx → products_db.json）
+│   └── import_products.py    # 批量导入产品数据（CSV → products_db.json）
 │
 ├── config.yaml               # 数据源配置（飞书 obj_token / 本地路径，不入 git）
 ├── data/
 │   ├── 产品数据库.csv          # 产品规格输入源（人工维护，固定列格式）
-│   ├── model_aliases.json    # 国内/海外型号映射表（Roborock 等品牌双名对照）
+│   ├── model_aliases.json    # 国内/海外型号映射表（Roborock/Dreame/Ecovacs/Narwal）
+│   ├── standard_parts.json   # 通用物料基准价库（price_1k + discount_factor）
 │   ├── products_db.json      # 产品数据库运行时缓存（import_products.py 写入，Agent 读写）
 │   ├── teardowns/            # 各机型拆机 CSV（gen_teardown.py 输出，人工核准后入库）
 │   │   └── {机型}_teardown.csv
 │   └── lib/
-│       └── components_lib.csv  # 标准件库（8桶分类，build_components.py 重建）
+│       └── components_lib.csv  # 标准件库（8桶分类，价格权威来源）
 └── requirements.txt
 ```
 
@@ -128,11 +126,18 @@ unit-bot/
                                                       飞书产品数据库（只写推送）
 
 拆机数据生成（AI 辅助，含 fccid.io）
-  scripts/gen_teardown.py "机型名"
-    ├── fccid.io 内部照片 / 框图  ──┐
-    ├── 拆机报告 / 网络评测        ──┼→  data/teardowns/{机型}_teardown.csv
-    └── 元件价格补全               ──┘
+  scripts/gen_teardown.py "机型名"          ← 4-Stage Pipeline
+    Stage 1  多源 Discovery（FCC/MyFixGuide/知乎）→ 爬元器件型号 + 判 confidence
+    Stage 2  Heuristic Enrichment（SoC 推导 PMIC/RAM/ROM 伴随件）
+    Stage 3  Price Lookup（components_lib.csv → standard_parts.json，纯查表）
+    Stage 4  Aggregate & Audit（8桶汇总，±5% 偏差告警）
+    └──→  data/teardowns/{机型}_teardown.csv
   人工核准后 ──→  scripts/build_components.py  ──→  data/lib/components_lib.csv
+
+价格维护
+  data/lib/components_lib.csv  ← 人工更新 cost_min / cost_max
+    ↑ gen_teardown.py Stage 3 优先读取此文件查价
+    ↑ standard_parts.json 作为未收录件的基准 fallback
 ```
 
 数据置信度：`database`（人工维护）> `teardown` / `fcc`（拆机/照片识别）> `web`（网络调研）> `estimate`（行业基准）
