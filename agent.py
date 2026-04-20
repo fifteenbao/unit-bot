@@ -1121,7 +1121,6 @@ def run_query(user_input: str, conversation: list[dict]) -> str:
 
     while True:
         response = client.messages.create(
-            model="claude-opus-4-6",
             max_tokens=8192,
             system=SYSTEM_PROMPT,
             tools=ALL_TOOLS,
@@ -1242,7 +1241,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    if not os.getenv("ANTHROPIC_API_KEY"):
-        console.print("[red]请设置 ANTHROPIC_API_KEY 环境变量[/red]")
-        sys.exit(1)
     main()

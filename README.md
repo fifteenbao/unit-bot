@@ -64,20 +64,22 @@ openclaw skills add https://github.com/fifteenbao/unit-bot
 
 ## 数据库配置（首次使用）
 
-本 skill 依赖两张飞书多维表格作为数据源，在 `.env` 中填写：
+编辑 `data/config.yaml`，填写飞书多维表格链接或本地文件路径（二选一，本地文件优先）：
 
-```bash
-# 产品数据库（规格/价格/功能，人工维护）
-FEISHU_PRODUCT_TABLE_URL=https://your-feishu-domain/base/xxx?table=tbl_product
+```yaml
+feishu:
+  product_table_url: "https://your-feishu-domain/base/xxx?table=tbl_product"
+  teardown_table_url: "https://your-feishu-domain/base/xxx?table=tbl_teardown"
+  components_table_url: "https://your-feishu-domain/base/xxx?table=tbl_components"
 
-# 拆机数据库（PCB/电机/传感器级数据，实物拆机维护）
-FEISHU_TEARDOWN_TABLE_URL=https://your-feishu-domain/base/xxx?table=tbl_teardown
-
-# 标准件库（build_components.py 生成后同步）
-FEISHU_COMPONENTS_TABLE_URL=https://your-feishu-domain/base/xxx?table=tbl_components
+local:
+  product_xlsx: ""       # 本地产品数据库 xlsx（填写后覆盖飞书）
+  teardown_xlsx: ""      # 本地拆机 Excel
 ```
 
 未配置时以**纯网络调研模式**运行，规格层通过 web_search 获取，PCB/电机级数据标注为 `estimate`。
+
+> `data/config.yaml` 已加入 `.gitignore`，不会提交到仓库。
 
 ---
 
@@ -111,22 +113,24 @@ unit-bot/
 ├── openclaw_bot.py            # Webhook 服务器（/hooks/agent）
 ├── agent.py                   # BOM Agent 核心逻辑（Claude 工具调用循环）
 ├── core/
+│   ├── config.py              # 数据源配置加载器（config.yaml → 环境变量）
 │   ├── db.py                  # 产品数据库 CRUD（深度合并 / 完整度追踪）
 │   ├── bom_loader.py          # 拆机 Excel 解析（自动识别 data/ 目录）
 │   ├── components_lib.py      # 标准件库 JSON CRUD
 │   └── feishu_sync.py         # 飞书多维表格同步（未配置时静默跳过）
 ├── scripts/
+│   ├── gen_teardown.py        # 通用拆机分析 Excel 生成器（含 FCC ID.io + 网络补全）
 │   ├── build_components.py    # 拆机 Excel → teardown CSV + 标准件库
 │   ├── import_products.py     # 产品数据库 xlsx 批量导入
-│   ├── gen_g30spro_teardown.py  # AI 辅助拆机草稿生成（模板）
 │   └── start.py               # 服务启动入口
+├── config.yaml               # 数据源配置（飞书链接 / 本地路径，不入 git）
 ├── data/
 │   ├── products_db.json        # 产品规格数据库（含 last_updated）
-│   ├── teardowns/              # 各机型拆机 CSV（含生成日期，历史版本保留）
-│   │   └── {机型}_teardown_{日期}.csv
-│   └── lib/
-│       └── components_lib.csv  # 标准件库（8桶分类，含 last_updated）
-├── .env.example
+│   ├── teardowns/              # 各机型拆机 CSV
+│   │   └── {机型}_teardown.csv
+│   ├── lib/
+│   │   └── components_lib.csv  # 标准件库（8桶分类，含 last_updated）
+│   └── {机型}_拆机分析.xlsx    # gen_teardown.py 输出的分析报告
 └── requirements.txt
 ```
 
@@ -137,18 +141,23 @@ unit-bot/
 ```
 人工维护
   飞书产品数据库  ──→  import_products.py  ──→  data/products_db.json
-  飞书拆机数据库  ──→  build_components.py ──→  data/teardowns/{机型}_{日期}.csv
+  飞书拆机数据库  ──→  build_components.py ──→  data/teardowns/{机型}.csv
                                            ──→  data/lib/components_lib.csv
 
 Agent 自动调研
   web_search  ──→  crawl_product_specs  ──→  save_product  ──→  products_db.json
                                                             ──→  飞书产品数据库（同步）
 
-拆机草稿生成（AI 辅助）
-  gen_*_teardown.py  →  data/{机型}_拆机分析.xlsx  →（人工核准）→  build_components.py
+拆机报告生成（AI 辅助，含 FCC ID.io）
+  gen_teardown.py "机型名"
+    ├── FCC ID.io 内部照片 / 框图  ──┐
+    ├── 拆机报告 / 网络评测        ──┼→  teardowns/{机型}_teardown.csv
+    └── 元件价格补全（LCSC/Mouser）──┘
+                                      └→  {机型}_拆机分析.xlsx（双Sheet报告）
+  人工核准后 ──→  build_components.py  ──→  components_lib.csv
 ```
 
-数据置信度：`teardown`（实物拆机）> `web`（网络调研）> `estimate`（行业基准推算）
+数据置信度：`teardown`（FCC照片/实物拆机）> `web`（网络调研）> `estimate`（行业基准推算）
 
 ---
 

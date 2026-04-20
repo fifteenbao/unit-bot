@@ -1,6 +1,9 @@
 # 环境变量（包含 API Key 等敏感信息）
 .env
 
+# 用户数据源配置（含私有飞书链接 / 本地路径）
+config.yaml
+
 # 私有拆机数据（Excel / CSV / 原始数据）
 data/*.xlsx
 data/*.xls
