@@ -9,19 +9,27 @@ data/*.xlsx
 data/*.xls
 data/*.csv
 
-# 运行时数据库（本地产品库 & 标准件库，含私有拆机数据）
+# 运行时数据库与私有数据（不入 git）
+data/products/
+data/teardowns/
+data/lib/
+data/bom/
+
+# 内部项目专用脚本（含机型标识，不入 git）
+scripts/seed_*.py
+scripts/analyze_*.py
+
+# 旧路径兼容（迁移后保留，防止意外提交）
 data/products_db.json
 data/components_lib.json
-data/components_lib.csv
 data/product_specs.json
 data/产品数据库.csv
 
-# 拆机分析与标准件库（私有数据，不入 git）
-data/teardowns/
-data/lib/
-
 # 公开数据（入 git）
-!data/model_aliases.json
+!data/lib/model_aliases.json
+
+# 价格变动历史（本地留存，不入 git）
+data/lib/price_history.csv
 
 # Python
 __pycache__/

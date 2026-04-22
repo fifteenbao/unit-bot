@@ -9,7 +9,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-DB_FILE = Path(__file__).parent.parent / "data" / "products_db.json"
+DB_FILE = Path(__file__).parent.parent / "data" / "products" / "products_db.json"
 
 # ─── Schema 模板 ───────────────────────────────────────────────
 PRODUCT_TEMPLATE: dict[str, Any] = {

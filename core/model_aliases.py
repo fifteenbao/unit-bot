@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 from typing import NamedTuple
 
-ALIASES_FILE = Path(__file__).parent.parent / "data" / "model_aliases.json"
+ALIASES_FILE = Path(__file__).parent.parent / "data" / "lib" / "model_aliases.json"
 
 
 class AliasMatch(NamedTuple):

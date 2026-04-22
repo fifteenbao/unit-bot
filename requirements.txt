@@ -2,6 +2,7 @@
 anthropic>=0.40.0
 openpyxl>=3.1.0
 rich>=13.0.0
+pymupdf>=1.24.0          # PDF → PNG 转换（fetch_fcc.py）
 
 # Feishu Bot
 flask>=3.0.0

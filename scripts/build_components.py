@@ -238,6 +238,32 @@ def load_teardown_csv(csv_path: Path) -> list[dict]:
     return rows
 
 
+def load_existing_lib() -> dict[str, dict]:
+    """读取现有 components_lib.csv，返回以 id 为 key 的字典，用于价格字段合并。"""
+    if not LIB_CSV.exists():
+        return {}
+    existing: dict[str, dict] = {}
+    with LIB_CSV.open(encoding="utf-8-sig") as f:
+        for row in csv.DictReader(f):
+            if row.get("id"):
+                existing[row["id"]] = row
+    return existing
+
+
+def merge_prices(new_rows: list[dict], existing: dict[str, dict]) -> list[dict]:
+    """将现有库中人工维护的 cost_min/cost_max 回填到重建结果，避免覆盖。"""
+    for row in new_rows:
+        prev = existing.get(row["id"])
+        if not prev:
+            continue
+        # 只要旧库中有价格，无条件保留（人工维护优先）
+        if prev.get("cost_min"):
+            row["cost_min"] = prev["cost_min"]
+        if prev.get("cost_max"):
+            row["cost_max"] = prev["cost_max"]
+    return new_rows
+
+
 def main(csv_files: list[Path]):
     LIB_DIR.mkdir(exist_ok=True)
     all_rows: list[dict] = []
@@ -252,7 +278,14 @@ def main(csv_files: list[Path]):
         print(f"  ✓ {csv_path.name}: {len(rows)} 条")
         all_rows.extend(rows)
 
+    existing = load_existing_lib()
     lib = build_lib(all_rows)
+    lib = merge_prices(lib, existing)
+
+    price_preserved = sum(1 for r in lib if r.get("cost_min") and r["id"] in existing
+                          and existing[r["id"]].get("cost_min") == r["cost_min"])
+    print(f"  价格字段：{price_preserved} 条保留现有值，{len(lib) - price_preserved} 条从拆机数据填充")
+
     with open(LIB_CSV, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=LIB_FIELDS)
         w.writeheader()

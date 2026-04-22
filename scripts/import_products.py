@@ -182,17 +182,17 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         path = Path(sys.argv[1])
     else:
-        data_dir = Path(__file__).parent.parent / "data"
+        products_dir = Path(__file__).parent.parent / "data" / "products"
         candidates = (
-            sorted(data_dir.glob("产品数据库.csv"))
-            or sorted(f for f in data_dir.glob("*.csv") if "产品" in f.name)
-            or sorted(f for f in data_dir.glob("*.xlsx") if "产品" in f.name)
+            sorted(products_dir.glob("products.csv"))
+            or sorted(f for f in products_dir.glob("*.csv"))
+            or sorted(f for f in products_dir.glob("*.xlsx"))
         )
         path = candidates[0] if candidates else None
 
     if not path or not path.exists():
         print("未找到产品数据库文件，请传入路径：")
-        print("  python scripts/import_products.py data/产品数据库.csv")
+        print("  python scripts/import_products.py data/products/products.csv")
         sys.exit(1)
 
     print(f"导入来源：{path}")

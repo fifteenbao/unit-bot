@@ -2,7 +2,7 @@
 name: unit-bot
 description: 扫地机器人 BOM 成本分析与技术选型专家。当用户询问扫地机器人（robot vacuum）的 BOM 成本、技术选型、零部件对比、供应链分析、竞品拆解时使用此技能。
 user-invocable: true
-metadata: {"openclaw": {"requires": {"bins": ["python3", "pip3"]}, "emoji": "🤖", "os": ["darwin", "linux"], "forwardPort": 8090, "forwardPath": "/hooks/agent"}}
+metadata: {"openclaw": {"requires": {"bins": ["python3", "pip3"]}, "emoji": "🤖", "os": ["darwin", "linux"]}}
 ---
 
 # unit-bot — 扫地机器人 BOM 成本分析与技术选型
@@ -56,7 +56,7 @@ local:
 | 步骤 | 动作 | 工具 |
 |------|------|------|
 | 1 查库 | 检索产品数据库 + 拆机数据库，确认已有数据与缺口 | `get_product_detail` · `get_missing_data` |
-| 2 网络检索 | 优先执行 fccid.io 抓取 PCB 芯片；再执行 web_search 补全规格层 | `crawl_product_specs` → `web_fetch` · `web_search` |
+| 2 网络检索 | web_search 补全规格层（吸力 / 续航 / 功能布尔值等） | `crawl_product_specs` → `web_fetch` · `web_search` |
 | 3 写入数据库 | 规格持久化到 `products_db.json`；同时运行 4-Stage Pipeline 生成拆机 CSV | `save_product` · `generate_teardown_csv` |
 | 4 技术亮点 | 列出 3–5 个核心技术差异点 | — |
 | 5 BOM 估算 | 8桶结构成本预估表（有拆机数据的桶优先使用实测值） | `generate_bom_estimate` |
@@ -69,12 +69,34 @@ local:
 
 | Stage | 职责 | 说明 |
 |-------|------|------|
-| 1 Discovery | 多源调研，爬取元器件型号 + 判断置信度 | FCC ID.io → MyFixGuide → 知乎 → 蓝牙SIG |
+| 1 Discovery | 多源调研，爬取元器件型号 + 判断置信度 | MyFixGuide → 知乎 → 蓝牙SIG |
 | 2 Heuristic Enrichment | SoC 推导伴随件 | 识别到 RK3566/RK3588S 等自动补充 PMIC/RAM/ROM |
 | 3 Price Lookup | 查表定价（不调用 API） | `components_lib.csv`（权威）→ `standard_parts.json`（基准 fallback） |
 | 4 Aggregate & Audit | 8桶汇总 + ±5% 偏差告警 | 标注超出理论区间的桶，提示人工核实 |
 
 > **价格维护入口**：`data/lib/components_lib.csv`（`cost_min` / `cost_max` 列）。更新后无需重启，下次生成拆机 CSV 时自动生效。
+
+### FCC 数据采集（独立前置步骤，可选）
+
+FCC 采集模块与 BOM 分析流程完全解耦，作为拆机报告的补充内容单独运行：
+
+```bash
+# 采集指定机型的 FCC 内部照片，识别 PCB 芯片
+python scripts/fetch_fcc.py "石头G30S Pro"
+
+# 直接指定 FCC ID（跳过品牌列表搜索）
+python scripts/fetch_fcc.py "科沃斯X8 Pro" --fcc-id 2A6HE-DEX8PRO
+
+# 强制重新抓取（忽略已有缓存）
+python scripts/fetch_fcc.py "石头P20 Ultra Plus" --force
+
+# 仅下载 PDF，不做 OCR 识别
+python scripts/fetch_fcc.py "石头S91COP02" --download-only
+```
+
+输出保存至 `data/teardowns/fcc/{slug}/latest.json`，PDF 原文件保存至 `data/teardowns/fcc/{slug}/pdfs/`。FCC 数据与 `gen_teardown.py` 完全解耦，作为独立的拆机参考资料维护。
+
+**支持品牌**：石头（Roborock）· 追觅（Dreame）· 科沃斯（Ecovacs）· 云鲸（Narwal）· 卧安/SwitchBot · 杉川/3irobotics · 安克/Eufy · 小米 · iRobot
 
 ### BOM 8桶成本框架
 
@@ -128,12 +150,14 @@ local:
 
 | 目录 / 文件 | 内容 | 维护方式 |
 |------------|------|--------|
-| `data/产品数据库.csv` | 产品规格输入源 | 人工维护 → `import_products.py` 导入 |
-| `data/products_db.json` | 产品数据库运行时缓存 | Agent 读写，飞书只写镜像 |
+| `data/products/products.csv` | 产品规格输入源 | 人工维护 → `import_products.py` 导入 |
+| `data/products/products_db.json` | 产品数据库运行时缓存 | Agent 读写，飞书只写镜像 |
 | `data/teardowns/{机型}_teardown.csv` | 各机型拆机数据 | `gen_teardown.py` 生成，人工核准入库 |
+| `data/teardowns/fcc/{slug}/latest.json` | FCC PCB 芯片识别结果 | `fetch_fcc.py` 生成，独立于 BOM 流程 |
+| `data/teardowns/fcc/{slug}/pdfs/` | FCC 原始 PDF 文档 | `fetch_fcc.py --download-only` 下载 |
 | `data/lib/components_lib.csv` | 标准件库 + 价格（权威来源） | 人工维护 `cost_min`/`cost_max` |
-| `data/standard_parts.json` | 通用物料基准价（fallback） | 人工维护，供未收录件使用 |
-| `data/model_aliases.json` | 国内/海外型号映射 | 人工维护（Roborock/Dreame/Ecovacs/Narwal） |
+| `data/lib/standard_parts.json` | 通用物料基准价（fallback） | 人工维护，供未收录件使用 |
+| `data/lib/model_aliases.json` | 国内/海外型号映射 | 人工维护（Roborock/Dreame/Ecovacs/Narwal） |
 
 ---
 
@@ -143,7 +167,7 @@ local:
 |------|------|------|
 | 产品数据库（人工维护，CSV 导入） | `database` | 规格 / 价格 / 功能，置信度最高 |
 | 实物拆机（teardown CSV） | `teardown` | PCB 芯片 / 电机 / 传感器 |
-| fccid.io 照片识别 | `fcc` | PCB 芯片（石头 / 追觅 / 科沃斯 / 云鲸） |
+| `fetch_fcc.py` FCC 照片识别（独立运行） | `fcc` | PCB 芯片，独立维护，不参与 BOM 生成流程 |
 | 网络调研 | `web` | 规格层（吸力 / 续航 / 功能布尔值） |
 | 行业基准估算 | `estimate` | BOM 成本（无拆机数据时） |
 
