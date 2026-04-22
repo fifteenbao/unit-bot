@@ -3,7 +3,13 @@
 
 CSV 字段：
   id, bom_bucket, bom_bucket_cn, name, name_en, tier, model_numbers,
-  spec, cost_min, cost_max, unit, suppliers, confidence, models, last_updated
+  spec, cost_min, cost_max, unit, price_tier, suppliers, confidence,
+  models, last_updated
+
+price_tier — 定价档位(BOM 成本分析务必使用 mass_production):
+  - mass_production: 量产FOB价 (年采 >1万 件的供应商报价, 默认)
+  - sample:          样品/小批量价 (百件级, 通常+30~50%)
+  - retail:          零售价/电商价 (个位数, 通常+50~100%)
 """
 from __future__ import annotations
 
@@ -17,8 +23,14 @@ LIB_FILE = Path(__file__).parent.parent / "data" / "lib" / "components_lib.csv"
 LIB_FIELDS = [
     "id", "bom_bucket", "bom_bucket_cn", "name", "name_en",
     "tier", "model_numbers", "spec", "cost_min", "cost_max", "unit",
-    "suppliers", "confidence", "models", "last_updated",
+    "price_tier", "suppliers", "confidence", "models", "last_updated",
 ]
+
+PRICE_TIER_NAMES = {
+    "mass_production": "量产FOB价",
+    "sample":          "样品/小批量价",
+    "retail":          "零售价",
+}
 
 CATEGORY_NAMES = {
     "compute_electronics": "算力与电子（SoC/MCU/Wi-Fi/被动元件）",

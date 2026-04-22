@@ -55,14 +55,17 @@ unit-bot/
 │   ├── bom_loader.py           # 拆机数据只读
 │   ├── components_lib.py       # 标准件库 CRUD
 │   ├── model_aliases.py        # 国内/海外型号别名匹配
-│   └── feishu_sync.py          # 飞书单向同步
+│   ├── feishu_sync.py          # 飞书单向同步
+│   ├── bucket_framework.py     # ★ 8 桶框架加载器（prompt 渲染 / 覆盖审计）
+│   └── bom_8bucket_framework.json  # ★ 8 桶标准模板（单一事实源，公开）
 │
 ├── scripts/                    # 离线维护工具（公开）
 │   ├── import_products.py      # ① 产品库导入：products.csv → products_db.json
-│   ├── gen_teardown.py         # ② 拆机 4-Stage Pipeline：Discovery→Enrichment→Price→Audit
+│   ├── gen_teardown.py         # ② 拆机 3-Stage Pipeline（消费 core/bucket_framework）
 │   ├── fetch_fcc.py            # ② FCC 照片 / PDF 抓取（OCR 待接入）
 │   ├── build_components.py     # ③ 拆机 CSV → components_lib.csv（不覆盖人工价格）
-│   └── update_prices.py        # ③ 动态爬价 → 更新 components_lib + price_history
+│   ├── update_prices.py        # ③ 动态爬价 → 更新 components_lib + price_history
+│   └── export_framework_csv.py # ★ JSON 模板 → data/lib/*.csv（对账工作表）
 │
 ├── web/                        # 前端 Web UI（Next.js + FastAPI，见下方章节）
 │   ├── api/                    # FastAPI 后端（数据查询 / OCR 识别代理）
@@ -72,12 +75,36 @@ unit-bot/
 │   ├── products/               # 市场调研：products.csv + products_db.json
 │   ├── teardowns/              # 竞品拆机：{机型}_teardown.csv + fcc/{slug}/
 │   ├── lib/                    # 标准件库：components_lib.csv + standard_parts.json
-│   │   └── model_aliases.json  # 公开：国内/海外型号映射
+│   │   └── model_aliases.json              # 公开：国内/海外型号映射
 │   └── bom/                    # 自家 BOM（私有项目数据）
 │
 ├── config.yaml                 # 飞书/本地数据源配置（不入 git）
 └── requirements.txt
 ```
+
+---
+
+## 8 桶框架工作流闭环
+
+`core/bom_8bucket_framework.json` 是**单一事实源**（桶定义 / 典型子项 / 行业占比基准 / 归桶边界）。所有消费方通过 `core/bucket_framework.py` 读取，模板更新一处、下游三处自动同步——
+
+```
+core/bom_8bucket_framework.json  ← 单一事实源（通用模板，无敏感数据）
+          │
+          ▼
+core/bucket_framework.py         ← 加载器 API
+          │
+          ├─→ scripts/gen_teardown.py
+          │        ├─ Stage 1 prompt 注入（桶定义 + 典型子项 + 边界）
+          │        └─ Stage 3 覆盖审计（对照 typical_items 报缺失关键项）
+          │
+          ├─→ scripts/analyze_*.py         （成本分桶 / 占比基准校验）
+          │
+          └─→ scripts/export_framework_csv.py （按需生成，不入库）
+                   └─→ data/lib/bom_8bucket_framework.csv（人看对账表，填价用）
+```
+
+对账 CSV 是 JSON 模板的**单向衍生品**，不入 git。做竞品对比时跑一次 `python scripts/export_framework_csv.py` 即可生成最新版本。gen_teardown 和 analyze 直接读 JSON，无需 CSV。
 
 ---
 
@@ -91,11 +118,11 @@ unit-bot/
 
 ② 竞品拆机
    机型名
-     └─→ gen_teardown.py (4-Stage)
+     └─→ gen_teardown.py (3-Stage, 对齐 bom_8bucket_framework.json)
            Stage 1 Discovery   爬 MyFixGuide/知乎/FCC  → 元器件型号 + confidence
+                               （prompt 从 framework 动态渲染桶清单）
            Stage 2 Enrichment  SoC heuristic → 伴随件（PMIC/RAM/ROM）
-           Stage 3 Price       查 components_lib.csv → standard_parts.json
-           Stage 4 Audit       8桶汇总 + ±5% 偏差告警
+           Stage 3 Audit       对照 framework typical_items → 报缺失关键子项
      └─→ fetch_fcc.py         FCC 图/PDF 抓取
                               [🚧 OCR 识别待接入 → 自动归类到 8 桶]
      └─→ data/teardowns/{机型}_teardown.csv（人工核准后）
