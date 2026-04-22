@@ -203,6 +203,7 @@
   },
   "validation_rules": {
     "bucket_pct_tolerance": 5,
-    "description": "每桶实际占比与 industry_pct_avg 偏差 >5% 需标记为重点关注项。合计总价明显偏低 (<行业均值 70%) 或偏高 (>130%) 时需核查 BOM 完整性"
+    "expected_bom_msrp_ratio_pct": [25, 40],
+    "description": "每桶实际占比与 industry_pct_avg 偏差 > bucket_pct_tolerance 需标记为重点关注项。BOM/MSRP 比例低于区间下限或高于上限时需核查 BOM 完整性 (常见范围 25-40%, 旗舰机偏上限)。"
   }
 }

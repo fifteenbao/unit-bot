@@ -61,7 +61,7 @@ unit-bot/
 │
 ├── scripts/                    # 离线维护工具（公开）
 │   ├── import_products.py      # ① 产品库导入：products.csv → products_db.json
-│   ├── gen_teardown.py         # ② 拆机 3-Stage Pipeline（消费 core/bucket_framework）
+│   ├── gen_teardown.py         # ② 拆机 4-Stage Pipeline（消费 core/bucket_framework）
 │   ├── fetch_fcc.py            # ② FCC 照片 / PDF 抓取（OCR 待接入）
 │   ├── build_components.py     # ③ 拆机 CSV → components_lib.csv（不覆盖人工价格）
 │   ├── update_prices.py        # ③ 动态爬价 → 更新 components_lib + price_history
@@ -84,25 +84,7 @@ unit-bot/
 
 ---
 
-## 8 桶框架工作流闭环
-
-`core/bom_8bucket_framework.json` 是**单一事实源**（桶定义 / 典型子项 / 行业占比基准 / 归桶边界）。所有消费方通过 `core/bucket_framework.py` 读取，模板更新一处、下游三处自动同步——
-
-```
-core/bom_8bucket_framework.json  ← 单一事实源（通用模板，无敏感数据）
-          │
-          ▼
-core/bucket_framework.py         ← 加载器 API
-          │
-          ├─→ scripts/gen_teardown.py
-          │        ├─ Stage 1 prompt 注入（桶定义 + 典型子项 + 边界）
-          │        └─ Stage 3 覆盖审计（对照 typical_items 报缺失关键项）
-          │
-          ├─→ scripts/analyze_*.py         （成本分桶 / 占比基准校验）
-          │
-          └─→ scripts/export_framework_csv.py （按需生成，不入库）
-                   └─→ data/lib/bom_8bucket_framework.csv（人看对账表，填价用）
-```
+ 
 
 对账 CSV 是 JSON 模板的**单向衍生品**，不入 git。做竞品对比时跑一次 `python scripts/export_framework_csv.py` 即可生成最新版本。gen_teardown 和 analyze 直接读 JSON，无需 CSV。
 
@@ -118,11 +100,13 @@ core/bucket_framework.py         ← 加载器 API
 
 ② 竞品拆机
    机型名
-     └─→ gen_teardown.py (3-Stage, 对齐 bom_8bucket_framework.json)
+     └─→ gen_teardown.py (4-Stage, 对齐 core/bom_8bucket_framework.json)
            Stage 1 Discovery   爬 MyFixGuide/知乎/FCC  → 元器件型号 + confidence
                                （prompt 从 framework 动态渲染桶清单）
            Stage 2 Enrichment  SoC heuristic → 伴随件（PMIC/RAM/ROM）
-           Stage 3 Audit       对照 framework typical_items → 报缺失关键子项
+           Stage 3 Coverage    对照 framework typical_items → 报缺失关键子项
+           Stage 4 Aggregate   三级查价 (components_lib → standard_parts → 兜底)
+                               按桶汇总 + ±5% 占比偏差告警 + BOM/MSRP 比
      └─→ fetch_fcc.py         FCC 图/PDF 抓取
                               [🚧 OCR 识别待接入 → 自动归类到 8 桶]
      └─→ data/teardowns/{机型}_teardown.csv（人工核准后）
@@ -141,7 +125,60 @@ core/bucket_framework.py         ← 加载器 API
           └─→ 8 桶占比报告 + per-leaf 明细 CSV
 ```
 
-置信度层级：`database`（人工）> `teardown`（拆机识别）> `fcc`（照片 OCR）> `web`（调研）> `estimate`（基准）
+置信度层级：`database`（人工）> `teardown`（拆机识别）> `fcc`（照片 OCR）> `web`（调研）> `inferred`（同平台推断）> `estimate`（基准）
+
+---
+
+## 8 桶框架工作流闭环
+
+`core/bom_8bucket_framework.json` 是**单一事实源**——桶定义、典型子项、example_spec、行业占比基准、归桶边界、容差规则，全部在这里。所有消费方通过 `core/bucket_framework.py` 读取，模板更新一处、下游四处自动同步：
+
+```
+core/bom_8bucket_framework.json  ← 单一事实源（通用模板，无敏感数据）
+  ├─ buckets.*.definition              → Stage 1 prompt
+  ├─ buckets.*.typical_items           → Stage 1 prompt + Stage 3 审计
+  ├─ buckets.*.boundary_notes          → Stage 1 prompt（全量）
+  ├─ buckets.*.industry_pct_range/avg  → Stage 4 基准 + 合格区间
+  └─ validation_rules.*                → Stage 4 容差 + BOM/MSRP 期望
+          │
+          ▼
+core/bucket_framework.py         ← 加载器 API
+          │
+          ├─→ scripts/gen_teardown.py
+          │        ├─ Stage 1 prompt 注入（定义 + typical_items + boundary_notes 全量）
+          │        ├─ Stage 2.5 桶名归一化（LLM 自创命名兜底映射到 bucket_keys()）
+          │        ├─ Stage 3 覆盖审计（对照 typical_items 报缺失关键子项）
+          │        └─ Stage 4 占比基准（± bucket_pct_tolerance 偏差 + BOM/MSRP 诊断）
+          │
+          ├─→ scripts/analyze_*.py             （成本分桶 / 占比基准校验）
+          │
+          └─→ scripts/export_framework_csv.py  （按需生成，不入库）
+                   └─→ data/lib/bom_8bucket_framework.csv（人看对账表，填价用）
+```
+
+对账 CSV 是 JSON 模板的**单向衍生品**，不入 git。做竞品对比时跑一次 `python scripts/export_framework_csv.py` 即可生成最新版本。gen_teardown 和 analyze 直接读 JSON，无需 CSV。
+
+---
+
+## 数据库配置（`config.yaml`）
+
+所有数据路径集中在根目录 [`config.yaml`](config.yaml)，便于 Skill / 脚本统一定位。编辑后立即生效，无需重启。
+
+| 分区 | 字段 | 默认路径 | 说明 |
+|------|------|---------|------|
+| `products` | `csv` | `data/products/products.csv` | 人工维护输入源 |
+|   | `db_json` | `data/products/products_db.json` | 运行时缓存 |
+|   | `fields_required` | 见 yaml | 导入时必填列 |
+| `teardown` | `dir` | `data/teardowns` | 每机型一份 `{slug}_teardown.csv` |
+|   | `fcc_dir` | `data/teardowns/fcc` | FCC 采集结果（独立） |
+| `components` | `lib_csv` | `data/lib/components_lib.csv` | 标准件权威价 |
+|   | `standard_parts_json` | `data/lib/standard_parts.json` | 未收录件 fallback |
+|   | `model_aliases_json` | `data/lib/model_aliases.json` | 国内/海外型号映射 |
+| `framework` | `json` | `core/bom_8bucket_framework.json` | 8 桶单一事实源 |
+|   | `loader` | `core.bucket_framework` | Python 加载器模块路径 |
+| `feishu` | `*_obj_token` | (空) | 可选展示层只写同步 |
+
+> 未配置的 feishu 字段自动静默跳过；本地文件路径支持自定义，Agent 和所有脚本通过相同配置定位数据。
 
 ---
 
@@ -295,6 +332,37 @@ web/
 
 ## 使用示例
 
+### 本地测试（无 Anthropic API Key 时用 AIHUBMIX 兼容代理）
+
+`gen_teardown.py` 的 web_agent 自动在两种 backend 间切换：
+
+| 环境变量 | 走哪条路 |
+|---|---|
+| 设置了 `AIHUBMIX_API_KEY` | OpenAI-compatible（aihubmix / 任意兼容接口），模型由 `AIHUBMIX_MODEL` 指定 |
+| 只有 `ANTHROPIC_API_KEY` | Anthropic 原生 + server-side web_search/web_fetch |
+
+AIHUBMIX 走法示例（推荐本地测试用，成本低且无需翻墙）：
+
+```bash
+# 单次跑
+AIHUBMIX_API_KEY=sk-xxx AIHUBMIX_MODEL=gpt-4o \
+  python scripts/gen_teardown.py "卧安 K10+ Pro Combo"
+
+# 持久写入当前 shell（一次性 export，后续命令直接跑）
+export AIHUBMIX_API_KEY=sk-xxx
+export AIHUBMIX_MODEL=gpt-4o         # 可选：默认 gpt-5.4-mini
+# export AIHUBMIX_BASE_URL=...        # 可选：默认 https://aihubmix.com/v1
+python scripts/gen_teardown.py "石头G30S Pro"
+
+# 只跑 Stage 2-4（跳过爬虫，复用已有 CSV 调试审计逻辑）
+python scripts/gen_teardown.py --csv data/teardowns/卧安K10+_20260422_teardown.csv "卧安K10+"
+
+# 显式指定 MSRP（跳过自动查询，加快调试）
+python scripts/gen_teardown.py --msrp 2999 "卧安 K10+ Pro Combo"
+```
+
+生成的 CSV 带日期后缀：`data/teardowns/{slug}_{YYYYMMDD}_teardown.csv`，便于版本对比。
+
 ### 命令行
 
 ```bash
@@ -306,6 +374,9 @@ python scripts/build_components.py
 # ③ 标准件库维护
 python scripts/update_prices.py --bucket compute_electronics --dry-run
 python scripts/update_prices.py
+
+# ④ 8 桶框架对账 CSV（按需生成，不入库）
+python scripts/export_framework_csv.py
 ```
 
 ### Agent 交互（接入 OpenClaw 后）

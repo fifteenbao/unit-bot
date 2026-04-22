@@ -52,20 +52,57 @@ def typical_item_names(key: str) -> list[str]:
     return [it["name"] for it in load_framework()["buckets"][key]["typical_items"]]
 
 
-def render_prompt_bucket_section() -> str:
-    """生成 LLM prompt 中的桶清单文本块, 含定义+典型子项+边界说明。"""
+def bucket_pct_tolerance() -> float:
+    """占比偏差容忍度(百分点), 从 framework validation_rules 读取。"""
+    return float(load_framework()["validation_rules"]["bucket_pct_tolerance"])
+
+
+def expected_bom_msrp_ratio() -> tuple[float, float]:
+    """BOM/MSRP 比例期望区间(百分比), 低于下限或高于上限视为异常。"""
+    lo, hi = load_framework()["validation_rules"]["expected_bom_msrp_ratio_pct"]
+    return float(lo), float(hi)
+
+
+def bucket_boundary_notes(key: str) -> list[str]:
+    """返回某桶的全部边界说明(prompt 应全量注入, 减少归错桶)。"""
+    return list(load_framework()["buckets"][key].get("boundary_notes", []))
+
+
+def bucket_definition(key: str) -> str:
+    return load_framework()["buckets"][key]["definition"]
+
+
+def render_prompt_bucket_section(include_example_spec: bool = True) -> str:
+    """生成 LLM prompt 中的桶清单文本块, 含定义+典型子项+全部边界说明。
+
+    重要: 每桶明确标注 bom_bucket 英文 key, LLM 必须使用该 key 而不是自创命名。
+    include_example_spec=True 时每个子项附带典型规格, LLM 输出更精确。
+    """
     fw = load_framework()
     lines: list[str] = []
-    for _, b in sorted(fw["buckets"].items(), key=lambda kv: kv[1]["order"]):
-        key = b["name_en"].lower().replace(" ", "_").replace("+", "_")
-        # 直接用 JSON 里的 key (更稳定)
-        lines.append(f"- **{b['order']}. {b['name_cn']}** ({b['industry_pct_avg']}%)")
+    for bkey, b in sorted(fw["buckets"].items(), key=lambda kv: kv[1]["order"]):
+        lo, hi = b["industry_pct_range"]
+        lines.append(
+            f"- **{b['order']}. {b['name_cn']}** "
+            f"(bom_bucket=`{bkey}`, 基准占比 {b['industry_pct_avg']}% "
+            f"[合格区间 {lo}-{hi}%])"
+        )
         lines.append(f"  定义: {b['definition']}")
-        items = "、".join(it["name"] for it in b["typical_items"])
-        lines.append(f"  典型子项: {items}")
-        if b.get("boundary_notes"):
-            lines.append(f"  边界: {b['boundary_notes'][0]}")
+        if include_example_spec:
+            for it in b["typical_items"]:
+                spec = it.get("example_spec", "")
+                lines.append(f"    · {it['name']}" + (f" — {spec}" if spec else ""))
+        else:
+            items = "、".join(it["name"] for it in b["typical_items"])
+            lines.append(f"  典型子项: {items}")
+        for note in b.get("boundary_notes", []):
+            lines.append(f"  边界: {note}")
         lines.append("")
+    valid_keys = ", ".join(f"`{k}`" for k in bucket_keys())
+    lines.append(
+        f"⚠ **`bom_bucket` 字段必须严格使用以下 8 个 key 之一**: {valid_keys}。"
+        f"不要自创命名 (如 perception_system / actuation_drive / cleaning_function 等)。"
+    )
     return "\n".join(lines).rstrip()
 
 

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-拆机 BOM 生成器 — 3-Stage Pipeline
+拆机 BOM 生成器 — 4-Stage Pipeline
 
-职责：爬取元器件型号 + 判断置信度 + 对照 8 桶标准框架审计覆盖
+职责：爬取元器件型号 + 判断置信度 + 对照 8 桶框架审计覆盖与成本偏差
 价格来源：components_lib.csv（人工维护，权威来源）→ standard_parts.json（基准 fallback）
-不调用 API 查价；定价更新请维护 data/lib/components_lib.csv
+            不调用 API 查价；定价更新请维护 data/lib/components_lib.csv
 
 8 桶标准模板：core/bom_8bucket_framework.json（通用、无敏感数据）
   - 桶定义、典型子项、行业占比基准、归桶边界 全部来自该文件
@@ -15,11 +15,13 @@
     python scripts/gen_teardown.py "科沃斯X8 Pro" --msrp 6999
     python scripts/gen_teardown.py --csv data/teardowns/xxx.csv "机型名"
 
-输出：data/teardowns/{model_slug}_teardown.csv
+输出：data/teardowns/{model_slug}_{YYYYMMDD}_teardown.csv
+      (含 _unit_price / _line_cost / _price_src, 日期后缀便于版本追溯)
 Pipeline：
-  Stage 1 Discovery (多源调研, prompt 注入 framework)
-  Stage 2 Heuristic Enrichment (SoC 推导伴随件)
-  Stage 3 Coverage Audit (对照 framework typical_items 报缺)
+  Stage 1 Discovery            多源调研, prompt 注入 framework 桶清单
+  Stage 2 Heuristic Enrichment SoC 识别 → 推导 PMIC/RAM/ROM 伴随件
+  Stage 3 Coverage Audit       对照 framework typical_items 报缺失关键子项
+  Stage 4 Aggregate & Bias     8 桶金额汇总 + ±5% 占比偏差告警 + BOM/MSRP 比
 """
 from __future__ import annotations
 
@@ -45,8 +47,17 @@ from core.bucket_framework import (  # noqa: E402
     bucket_keys,
     bucket_pct_avg,
     bucket_pct_range,
+    bucket_pct_tolerance,
     buckets_ordered,
+    expected_bom_msrp_ratio,
     render_prompt_bucket_section,
+)
+from core.bom_rules import (  # noqa: E402
+    BUCKET_DEFAULT_PRICE,
+    aux_price,
+    classify,
+    is_aggregate,
+    is_aux,
 )
 from core.components_lib import load_lib  # noqa: E402
 
@@ -58,6 +69,8 @@ BUCKET_THEORY = {k: bucket_pct_range(k) for k, _ in BUCKETS}
 CSV_FIELDS = [
     "bom_bucket", "section", "name", "model", "type",
     "spec", "manufacturer", "qty", "source_url", "updated_at", "product_source",
+    # Stage 4 查价补充字段 (有则写, 没有则空)
+    "_unit_price", "_line_cost", "_price_src",
 ]
 
 
@@ -110,14 +123,24 @@ def save_csv(rows: list[dict], path: Path, model: str) -> None:
 
 
 def find_csv(model: str) -> Optional[Path]:
+    """查找某机型已有的拆机 CSV, 优先返回最新一份 (按 mtime)。
+
+    匹配顺序:
+      1. 精确无日期版: {slug}_teardown.csv (兼容老文件)
+      2. 带日期版: {slug}_{YYYYMMDD}_teardown.csv 中 mtime 最新
+      3. 模糊包含 slug 子串的任意 _teardown*.csv 中 mtime 最新
+    """
     slug = _slug(model)
     exact = TEARDOWN_DIR / f"{slug}_teardown.csv"
     if exact.exists():
         return exact
-    for p in sorted(TEARDOWN_DIR.glob("*_teardown*.csv")):
-        if slug.lower() in p.name.lower() or p.stem.lower().startswith(slug.lower()[:6]):
-            return p
-    return None
+    candidates = [
+        p for p in TEARDOWN_DIR.glob("*_teardown*.csv")
+        if slug.lower() in p.name.lower() or p.stem.lower().startswith(slug.lower()[:6])
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -300,7 +323,33 @@ _DISCOVERY_PROMPT = """\
 
 source_url 说明：填写该零件名称/型号信息的具体来源页面 URL（拆机报告页、评测文章、蓝牙SIG认证页等）；若为行业推断则留空。
 
-**目标**：覆盖全部 8 个桶，每桶至少 3 个主要零件。\
+---
+
+**硬约束（必须满足，否则视为失败）**：
+
+1. **每桶 ≥ 3 件**（能源桶除外，≥ 1 件即可）。拆机报告未提及的也要按 typical_items 推断补齐，标注 `confidence: inferred`。
+
+2. **基站系统** `dock_station` 必须覆盖以下 4 大件（如果该机型带基站）：
+   - 基站外壳（五大件，归一行）
+   - 基站电源板
+   - 基站集尘风机（若带集尘功能）
+   - 基站清水桶 / 污水桶（若带自动换水）
+
+3. **算力桶** `compute_electronics` 必须至少包含：
+   - 主控 SoC（哪怕只知道厂商、型号填 "未确认" 也要列出）
+   - 主板 PCB
+   - 无线模组（Wi-Fi/BT）
+
+4. **清洁桶** `cleaning` 若该机型带拖地，必须包含：
+   - 拖布本体（区分双面/普通）
+   - 清水泵
+   - 主机水箱（清水/污水）
+
+5. **bom_bucket 字段**必须严格使用 8 个合法 key（见上方桶说明），不要自创命名。
+
+6. **name 字段**优先使用 framework `typical_items` 的**完整名称**（如 "主控 SoC"、"基站集尘风机"、"双面拖布"），便于下游匹配标准件库。
+
+**目标**：覆盖全部 8 个桶，总行数 ≥ 25（入门机）/ 35（中端）/ 45（旗舰带基站）。\
 """
 
 
@@ -427,6 +476,112 @@ def stage2_heuristic_enrichment(rows: list[dict]) -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════════════
+#  桶名归一化 (LLM 偶尔自创命名, 做一次兜底映射)
+# ══════════════════════════════════════════════════════════════════
+
+_BUCKET_ALIASES = {
+    # 常见错写 → 正确 key
+    "perception_system":   "perception",
+    "perception_sensor":   "perception",
+    "sensing":             "perception",
+    "actuation_drive":     "power_motion",
+    "actuation":           "power_motion",
+    "drive_power":         "power_motion",
+    "motion":              "power_motion",
+    "cleaning_function":   "cleaning",
+    "cleaning_module":     "cleaning",
+    "energy_system":       "energy",
+    "battery":             "energy",
+    "power_supply":        "energy",
+    "cmf_structural":      "structure_cmf",
+    "structural":          "structure_cmf",
+    "structure":           "structure_cmf",
+    "cmf":                 "structure_cmf",
+    "chassis":             "structure_cmf",
+    "dock":                "dock_station",
+    "station":             "dock_station",
+    "compute":             "compute_electronics",
+    "electronics":         "compute_electronics",
+    "software":            "mva_software",
+    "mva":                 "mva_software",
+}
+
+
+def normalize_buckets(rows: list[dict]) -> list[dict]:
+    """把 LLM 可能自创的桶名归一化到 framework 的 8 个合法 key。"""
+    valid = set(bucket_keys())
+    fixes = 0
+    unknown: dict[str, int] = {}
+    for r in rows:
+        b = (r.get("bom_bucket") or "").strip()
+        if b in valid:
+            continue
+        mapped = _BUCKET_ALIASES.get(b.lower())
+        if mapped:
+            r["bom_bucket"] = mapped
+            fixes += 1
+        else:
+            unknown[b] = unknown.get(b, 0) + 1
+
+    if fixes:
+        print(f"  [Normalize] 桶名归一化: 修复 {fixes} 条 LLM 自创命名")
+    if unknown:
+        print(f"  ⚠ {sum(unknown.values())} 条 bucket 未识别: " +
+              ", ".join(f"{k}(×{v})" for k, v in unknown.items()))
+    return rows
+
+
+def apply_rules_overlay(rows: list[dict]) -> list[dict]:
+    """用 KEYWORD_RULES 对 LLM 产出做二次归桶 + 打聚合标记 + 记 lib hint。
+
+    目的: 复用 analyze_c33 打磨过的 70+ 规则, 让竞品 BOM 享受同级分类精度。
+    优先级: 规则命中 > LLM 给的桶 (规则准确度高, LLM 常归错)。
+
+    产生的新字段:
+      _rule_bucket: 规则认定的桶 (可能覆盖 LLM 的 bom_bucket)
+      _lib_hint:    用于 Stage 4 查 components_lib 的关键词
+      _agg_note:    聚合标记 (带 "(聚合)" 的件整机计一次)
+      _is_aux:      是否为辅料件 (按 aux_price 分档定价)
+    """
+    overrides = 0
+    aggregates = 0
+    aux_count = 0
+    for r in rows:
+        name = r.get("name", "")
+        spec = r.get("spec", "")
+        llm_bucket = (r.get("bom_bucket") or "").strip()
+        # 区域推断 (仅从 name 启发, LLM 不给父子链)
+        region = "robot"
+        if "基站" in name or "dock" in name.lower() or llm_bucket == "dock_station":
+            region = "dock"
+        if any(k in name for k in ("包装", "外箱", "彩箱", "说明书")):
+            region = "package"
+
+        rule_bucket, hint, note = classify(name, spec, region)
+        if rule_bucket and rule_bucket != llm_bucket:
+            r["bom_bucket"] = rule_bucket
+            overrides += 1
+        r["_rule_bucket"] = rule_bucket or llm_bucket
+        r["_lib_hint"] = hint
+        r["_agg_note"] = note
+        if is_aggregate(note):
+            aggregates += 1
+        if is_aux(name):
+            r["_is_aux"] = True
+            aux_count += 1
+        else:
+            r["_is_aux"] = False
+
+    if overrides:
+        print(f"  [Rules] 规则覆盖 LLM 归桶: {overrides} 条 (KEYWORD_RULES 比 LLM 更精确)")
+    if aggregates:
+        print(f"  [Rules] 识别聚合件: {aggregates} 条 (整机计一次, 不按 qty 累加)")
+    if aux_count:
+        print(f"  [Rules] 识别辅料件: {aux_count} 条 (按分档价兜底, 避免误匹高价 lib)")
+    return rows
+
+
+# ══════════════════════════════════════════════════════════════════
 #  Stage 3 — Coverage Audit（对照 framework typical_items 检查覆盖）
 # ══════════════════════════════════════════════════════════════════
 
@@ -484,30 +639,88 @@ def stage3_coverage_audit(rows: list[dict]) -> dict:
 #  Stage 4 — Aggregate & Bias Audit（8 桶金额汇总 + ±5% 偏差告警）
 # ══════════════════════════════════════════════════════════════════
 
-def _lookup_unit_price(row: dict, lib_index: dict, parts_json: dict) -> tuple[float, str]:
-    """三级查价: components_lib.csv → standard_parts.json → 桶兜底价。"""
+def _lookup_unit_price(
+    row: dict, lib_index: dict, parts_json: dict,
+    already_used_lib_ids: set | None = None,
+) -> tuple[float, str]:
+    """分级查价 (严格 → 模糊): 规则 hint → lib → standard_parts → AUX/桶兜底。
+
+    优先级:
+      0. 辅料件 → AUX 分档兜底 (aux_price)
+      1. 规则给的 _lib_hint 在 lib 中精确查 (最高命中)
+      2. model_numbers 精确包含
+      3. name 完全相等 (去空格/标点)
+      4. name 子串匹配
+      5. standard_parts.json
+      6. 桶兜底
+
+    already_used_lib_ids: 本桶内已被"整机唯一"件命中的 lib id,
+    同桶再出现时不再重复计价。
+    """
     bucket = (row.get("bom_bucket") or "").strip()
     name = (row.get("name") or "").strip()
     model = (row.get("model") or "").strip()
-    blob = f"{name} {model} {row.get('spec','')}"
+    spec = row.get("spec", "")
+    blob = f"{name} {model} {spec}"
+    hint = (row.get("_lib_hint") or "").strip()
 
-    # 1) components_lib.csv — 按桶 + name 子串 / model 精确匹配
-    for lib_row in lib_index.get(bucket, []):
-        lname = lib_row.get("name", "")
-        if not lname:
-            continue
-        if lname in name or (name and name in lname):
-            p = _mid_cost(lib_row)
-            if p:
-                return p, f"lib:{lib_row['id']}"
+    # Tier 0: 辅料件 → 分档兜底, 不查 lib (避免误匹主件高价)
+    if row.get("_is_aux"):
+        return aux_price(name, spec), "aux"
+
+    candidates = lib_index.get(bucket, [])
+    used = already_used_lib_ids if already_used_lib_ids is not None else set()
+
+    # Tier 1: 规则 hint → lib name 子串 (最可靠, 规则已精挑 hint)
+    if hint:
+        for lib_row in candidates:
+            lname = lib_row.get("name", "")
+            if lname and hint in lname:
+                if lib_row["id"] in used:
+                    return BUCKET_DEFAULT_PRICE.get(bucket, 1.0), f"default:{bucket}(防重)"
+                p = _mid_cost(lib_row)
+                if p:
+                    used.add(lib_row["id"])
+                    return p, f"lib:{lib_row['id']}(hint)"
+
+    # Tier 2: model_numbers 精确包含
+    for lib_row in candidates:
         for m in (lib_row.get("model_numbers") or "").split("、"):
             m = m.strip()
             if m and m in blob:
                 p = _mid_cost(lib_row)
                 if p:
+                    used.add(lib_row["id"])
                     return p, f"lib:{lib_row['id']}(型号)"
 
-    # 2) standard_parts.json — 组内 name 子串匹配
+    # Tier 3: name 完全相等 (去空格/标点)
+    def _norm(s: str) -> str:
+        return re.sub(r"[\s/+\-·]+", "", s).lower()
+    name_norm = _norm(name)
+    for lib_row in candidates:
+        lname = lib_row.get("name", "")
+        if lname and _norm(lname) == name_norm:
+            if lib_row["id"] in used:
+                return BUCKET_DEFAULT_PRICE.get(bucket, 1.0), f"default:{bucket}(防重)"
+            p = _mid_cost(lib_row)
+            if p:
+                used.add(lib_row["id"])
+                return p, f"lib:{lib_row['id']}"
+
+    # Tier 4: name 子串匹配 (lib name 作为主词)
+    for lib_row in candidates:
+        lname = lib_row.get("name", "")
+        if not lname or len(lname) < 3:
+            continue
+        if lname in name or lname in blob:
+            if lib_row["id"] in used:
+                return BUCKET_DEFAULT_PRICE.get(bucket, 1.0), f"default:{bucket}(防重)"
+            p = _mid_cost(lib_row)
+            if p:
+                used.add(lib_row["id"])
+                return p, f"lib:{lib_row['id']}(子串)"
+
+    # Tier 5: standard_parts.json
     for group, items in parts_json.items():
         if not isinstance(items, list):
             continue
@@ -520,8 +733,8 @@ def _lookup_unit_price(row: dict, lib_index: dict, parts_json: dict) -> tuple[fl
                 if price:
                     return float(price), f"std:{group}/{it_name}"
 
-    # 3) 桶兜底价 (避免整桶为 0)
-    return _BUCKET_FALLBACK.get(bucket, 1.0), f"default:{bucket}"
+    # Tier 6: 桶兜底 (优先用 bom_rules 的 BUCKET_DEFAULT_PRICE, 更贴近真实)
+    return BUCKET_DEFAULT_PRICE.get(bucket, 1.0), f"default:{bucket}"
 
 
 def _mid_cost(row: dict) -> float | None:
@@ -539,20 +752,38 @@ def _mid_cost(row: dict) -> float | None:
     return (lo + hi) / 2
 
 
-_BUCKET_FALLBACK = {
-    "compute_electronics": 2.0,
-    "perception":          3.0,
-    "power_motion":        5.0,
-    "cleaning":            3.0,
-    "dock_station":        3.0,
-    "energy":              5.0,
-    "structure_cmf":       1.5,
-    "mva_software":        5.0,
-}
+def _diagnose_bias(
+    bkt: str, pct: float, target_pct: float, delta: float,
+    coverage_info: dict | None, row_count: int,
+) -> str:
+    """根据 coverage + 偏差方向, 生成可操作的诊断建议。"""
+    present = len(coverage_info.get("present", [])) if coverage_info else 0
+    missing = len(coverage_info.get("missing", [])) if coverage_info else 0
+    total_typical = present + missing
+    coverage_ratio = present / total_typical if total_typical else 1.0
+
+    if delta < 0:  # 偏低
+        if coverage_ratio < 0.5 and missing > 0:
+            miss_preview = ", ".join((coverage_info.get("missing") or [])[:3])
+            return f"疑似【缺件】(覆盖 {present}/{total_typical}), 优先核查: {miss_preview}"
+        return f"疑似【定价偏低】(覆盖 {present}/{total_typical} 达标, 但金额不足)，核查 components_lib.csv 中的价格"
+    else:  # 偏高
+        if coverage_info and row_count > total_typical * 1.5:
+            return f"疑似【重复计价】({row_count} 行 vs framework 仅 {total_typical} 典型子项), 核查是否子件独立计价"
+        if coverage_ratio >= 0.5:
+            return f"疑似【单价偏高】或【机型溢价件】, 核查本桶 Top 3 高价行的 components_lib 价格"
+        return f"覆盖不足但金额偏高, 核查是否被 default:{bkt} 兜底过多"
 
 
-def stage4_aggregate_audit(rows: list[dict], msrp: float) -> dict:
-    """对每行查价 → 按桶汇总 → 对照 framework 占比基准做 ±5% 偏差告警。"""
+def stage4_aggregate_audit(
+    rows: list[dict], msrp: float,
+    coverage: dict | None = None,
+) -> dict:
+    """对每行查价 → 按桶汇总 → 对照 framework 占比基准做偏差告警 + 诊断建议。
+
+    coverage: stage3_coverage_audit 返回的 buckets dict; 传入后告警附带诊断提示
+    (缺件 vs 重复计价 vs 定价偏低), 便于定位问题。
+    """
     # 预建 components_lib 索引 (按桶分组)
     lib_index: dict[str, list[dict]] = {}
     for lib_row in load_lib():
@@ -562,12 +793,35 @@ def stage4_aggregate_audit(rows: list[dict], msrp: float) -> dict:
 
     bucket_totals: dict[str, float] = {k: 0.0 for k, _ in BUCKETS}
     bucket_counts: dict[str, int] = {k: 0 for k, _ in BUCKETS}
+    # 每桶独立 "已用 lib id" 集合, 防止同一整机唯一件被多行重复计价
+    used_by_bucket: dict[str, set] = {k: set() for k, _ in BUCKETS}
+    # 聚合件: 同一 (bucket, hint) 只计一次, 下级重复行记录但 line_cost=0
+    counted_aggregates: set[tuple[str, str]] = set()
+
     for r in rows:
         bkt = (r.get("bom_bucket") or "").strip()
         if bkt not in bucket_totals:
             continue
-        unit_price, src = _lookup_unit_price(r, lib_index, parts_json)
-        qty = _norm_qty(r.get("qty"))
+
+        # 聚合件: 整机只计一次 (复用 analyze_c33 的聚合思想)
+        note = r.get("_agg_note", "")
+        hint = r.get("_lib_hint", "")
+        if is_aggregate(note) and hint:
+            agg_key = (bkt, hint)
+            if agg_key in counted_aggregates:
+                r["_unit_price"] = 0
+                r["_line_cost"]  = 0
+                r["_price_src"]  = f"agg→[{bkt}]{hint}(已计)"
+                bucket_counts[bkt] += 1
+                continue
+            counted_aggregates.add(agg_key)
+
+        unit_price, src = _lookup_unit_price(
+            r, lib_index, parts_json,
+            already_used_lib_ids=used_by_bucket[bkt],
+        )
+        # 聚合件固定按 qty=1 计 (整机整体)
+        qty = 1 if is_aggregate(note) else _norm_qty(r.get("qty"))
         r["_unit_price"] = round(unit_price, 2)
         r["_line_cost"]  = round(unit_price * qty, 2)
         r["_price_src"]  = src
@@ -576,9 +830,14 @@ def stage4_aggregate_audit(rows: list[dict], msrp: float) -> dict:
 
     grand = sum(bucket_totals.values())
 
+    tolerance = bucket_pct_tolerance()  # 来自 framework validation_rules
+    ratio_lo, ratio_hi = expected_bom_msrp_ratio()
+
     print(f"\n  [Stage 4] 8桶金额汇总 (查价: components_lib → standard_parts → 兜底)")
     print(f"  {'桶':16s} {'行数':>4s}  {'成本(¥)':>10s}  {'占比':>7s}  {'基准':>8s}  状态")
     print(f"  {'-'*76}")
+
+    cov_buckets = (coverage or {}).get("buckets") if coverage else {}
 
     bias_alerts: list[str] = []
     bucket_money: dict[str, dict] = {}
@@ -587,13 +846,19 @@ def stage4_aggregate_audit(rows: list[dict], msrp: float) -> dict:
         pct = cost / grand * 100 if grand else 0
         target_pct = bucket_pct_avg(bkt) * 100
         delta = pct - target_pct
-        if abs(delta) <= 5:
+        if abs(delta) <= tolerance:
             status = "✓"
         else:
             direction = "↑偏高" if delta > 0 else "↓偏低"
             status = f"⚠ {direction} {abs(delta):.1f}%"
+            diag = _diagnose_bias(
+                bkt, pct, target_pct, delta,
+                cov_buckets.get(bkt) if cov_buckets else None,
+                bucket_counts[bkt],
+            )
             bias_alerts.append(
-                f"{name_cn}（{bkt}）：占比 {pct:.1f}% vs 基准 {target_pct:.0f}% ({direction} {abs(delta):.1f}%)"
+                f"{name_cn}（{bkt}）：占比 {pct:.1f}% vs 基准 {target_pct:.0f}% "
+                f"({direction} {abs(delta):.1f}%)\n      → {diag}"
             )
         print(f"  {name_cn:16s} {bucket_counts[bkt]:>4d}  {cost:>10.2f}  "
               f"{pct:>6.1f}%  {target_pct:>7.0f}%  {status}")
@@ -606,21 +871,37 @@ def stage4_aggregate_audit(rows: list[dict], msrp: float) -> dict:
     print(f"  {'-'*76}")
     print(f"  {'整机 BOM 合计':16s} {sum(bucket_counts.values()):>4d}  {grand:>10.2f}")
 
+    ratio_alert = None
     if msrp and grand:
         bom_ratio = grand / msrp * 100
-        print(f"\n  BOM/MSRP 比例: {bom_ratio:.1f}%  (行业常见 25-40%)")
+        ratio_status = "✓" if ratio_lo <= bom_ratio <= ratio_hi else "⚠"
+        print(f"\n  BOM/MSRP 比例: {bom_ratio:.1f}%  "
+              f"(framework 期望 {ratio_lo:.0f}-{ratio_hi:.0f}%)  {ratio_status}")
+        if bom_ratio < ratio_lo:
+            ratio_alert = (
+                f"BOM/MSRP {bom_ratio:.1f}% 低于期望下限 {ratio_lo:.0f}%, "
+                f"疑似 BOM 不完整 (Stage 1 漏项 或 components_lib 未收录)"
+            )
+        elif bom_ratio > ratio_hi:
+            ratio_alert = (
+                f"BOM/MSRP {bom_ratio:.1f}% 高于期望上限 {ratio_hi:.0f}%, "
+                f"疑似零件重复计价 或 MSRP 偏低"
+            )
+        if ratio_alert:
+            print(f"    ⚠ {ratio_alert}")
 
     if bias_alerts:
-        print(f"\n  ⚠ 占比偏差告警（{len(bias_alerts)} 条）：")
+        print(f"\n  ⚠ 占比偏差告警（{len(bias_alerts)} 条, 容差 ±{tolerance:.0f}%）：")
         for a in bias_alerts:
             print(f"    • {a}")
     else:
-        print(f"\n  ✓ 8 桶占比全部在基准 ±5% 内")
+        print(f"\n  ✓ 8 桶占比全部在基准 ±{tolerance:.0f}% 内")
 
+    all_bias = bias_alerts + ([ratio_alert] if ratio_alert else [])
     return {
         "grand_total": round(grand, 2),
         "buckets_money": bucket_money,
-        "bias_alerts": bias_alerts,
+        "bias_alerts": all_bias,
     }
 
 
@@ -669,47 +950,61 @@ def _canonical_product_name(model: str) -> str:
 
 
 def lookup_msrp_from_web(model: str) -> float:
-    """从亚马逊搜索产品实际售价，查到后自动写入 products_db.json。"""
+    """多渠道搜索产品实际零售价 (国内电商 → 亚马逊海外), 查到后写入 products_db.json。"""
     print(f"  → 查询 {model} 零售价…")
     try:
         text = _run_web_agent(
             (
-                "你是价格查询助手。请在亚马逊（amazon.com 或 amazon.co.jp）搜索该产品，"
-                "找到最接近的商品列表页或商品详情页，提取当前售价。\n"
-                "只输出以下 JSON 格式，不要任何其他文字：\n"
-                '{"price_usd": 数字或null, "price_jpy": 数字或null, "url": "亚马逊链接"}'
+                "你是价格查询助手。依次在以下渠道搜索该产品的当前零售价:\n"
+                "  1. 京东 (jd.com) — 国产品牌首选\n"
+                "  2. 天猫/淘宝 (tmall.com / taobao.com)\n"
+                "  3. 品牌官网 (如 roborock.cn / dreametech.com / switch-bot.com)\n"
+                "  4. 亚马逊 (amazon.com / amazon.co.jp / amazon.de) — 海外售价\n"
+                "找到最接近的商品链接, 提取当前售价。优先返回 CNY 售价。\n"
+                "严格输出以下 JSON (无其他文字, 无 markdown):\n"
+                '{"price_cny": 数字或null, "price_usd": 数字或null, '
+                '"price_jpy": 数字或null, "price_eur": 数字或null, '
+                '"source": "京东/天猫/官网/Amazon.com 等", "url": "商品链接"}'
             ),
-            f"请在亚马逊搜索：{model} robot vacuum，返回售价和链接。",
-            max_tokens=512,
+            f"搜索 {model} 扫地机器人 / robot vacuum 的零售价, 返回 JSON。",
+            max_tokens=2048,  # 留给 web_search 回合 + 解析
         )
         # 解析 JSON
-        m = re.search(r"\{[^}]+\}", text, re.DOTALL)
+        m = re.search(r"\{[^{}]*\}", text, re.DOTALL)
         data: dict = json.loads(m.group()) if m else {}
 
+        price_cny = data.get("price_cny")
         price_usd = data.get("price_usd")
         price_jpy = data.get("price_jpy")
-        amazon_url = data.get("url", "")
+        price_eur = data.get("price_eur")
+        source    = data.get("source", "")
+        url       = data.get("url", "")
 
-        # 换算成人民币（粗略汇率）
-        if price_usd:
+        # 优先级: CNY > USD > EUR > JPY
+        if price_cny:
+            price_cny = round(float(price_cny), 0)
+            price_str = f"¥{price_cny:.0f} (原币)"
+        elif price_usd:
             price_cny = round(float(price_usd) * 7.2, 0)
             price_str = f"${price_usd:.0f} → ¥{price_cny:.0f}"
+        elif price_eur:
+            price_cny = round(float(price_eur) * 7.8, 0)
+            price_str = f"€{price_eur:.0f} → ¥{price_cny:.0f}"
         elif price_jpy:
             price_cny = round(float(price_jpy) * 0.048, 0)
             price_str = f"¥{price_jpy:.0f}(JPY) → ¥{price_cny:.0f}"
         else:
-            raise ValueError("未找到价格")
+            raise ValueError(f"未找到价格 (raw 前 200 字: {text[:200]!r})")
 
-        print(f"  ✓ 零售价: {price_cny:.0f} 元（{price_str}）")
-        if amazon_url:
-            print(f"  → 来源: {amazon_url}")
+        print(f"  ✓ 零售价: ¥{price_cny:.0f}（{price_str}  来源: {source or '-'}）")
+        if url:
+            print(f"  → 链接: {url}")
 
-        # 自动写入 products_db.json
-        _save_msrp_to_db(model, price_cny, amazon_url)
-
+        _save_msrp_to_db(model, price_cny, url)
         return price_cny
     except Exception as e:
-        print(f"  ⚠ 价格查询失败: {e}，使用默认值 5000 元")
+        print(f"  ⚠ 价格查询失败: {e}")
+        print(f"  → 使用默认值 ¥5000 (传 --msrp 显式指定可跳过此步)")
         return 5000.0
 
 
@@ -752,41 +1047,62 @@ def _save_msrp_to_db(model: str, price_cny: float, source_url: str) -> None:
 
 def run_pipeline(model: str, msrp: float,
                  existing_csv: Optional[Path] = None) -> tuple[list[dict], dict]:
-    """完整执行 3-Stage Pipeline，返回 (rows, audit_report)。"""
+    """完整执行 4-Stage Pipeline，返回 (rows, audit_report)。"""
     # 规范化产品名（确保 product_source 与 products_db key 一致）
     canonical = _canonical_product_name(model)
     if canonical != model:
         print(f"  → 产品名规范化: {model!r} → {canonical!r}")
     model = canonical
 
-    # Stage 1: Discovery
+    # Stage 1: Discovery (prompt 从 framework 动态渲染桶清单)
     if existing_csv and existing_csv.exists():
         rows = load_csv(existing_csv)
         print(f"  ✓ 加载现有 CSV: {existing_csv.name}（{len(rows)} 条）")
     else:
         rows = stage1_discovery(model, msrp)
 
-    # Stage 2: Heuristic Enrichment
+    # Stage 2: SoC Heuristic Enrichment (推导 PMIC/RAM/ROM 伴随件)
     rows = stage2_heuristic_enrichment(rows)
 
-    # Stage 3: Coverage Audit
-    audit = stage4_aggregate_audit(rows, msrp)
+    # 桶名归一化 (兜底: LLM 偶尔自创命名)
+    rows = normalize_buckets(rows)
 
-    return rows, audit
+    # 规则二次归桶 (复用 analyze_c33 的 KEYWORD_RULES + 聚合标记 + 辅料识别)
+    rows = apply_rules_overlay(rows)
+
+    # Stage 3: Coverage Audit (对照 framework typical_items 报缺失关键子项)
+    coverage = stage3_coverage_audit(rows)
+
+    # Stage 4: Aggregate & Bias Audit (8 桶金额 + ±5% 占比偏差告警 + coverage 诊断)
+    money = stage4_aggregate_audit(rows, msrp, coverage=coverage)
+
+    return rows, {
+        "msrp": msrp,
+        "total_parts": len(rows),
+        "coverage": coverage,
+        "money": money,
+        "alerts": coverage["alerts"] + money["bias_alerts"],
+    }
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="拆机 BOM 生成器 — 3-Stage Pipeline (对齐 bom_8bucket_framework.json)")
+    parser = argparse.ArgumentParser(description="拆机 BOM 生成器 — 4-Stage Pipeline (对齐 core/bom_8bucket_framework.json)")
     parser.add_argument("model", nargs="?", help="机型名称，如 '石头G30S Pro'")
     parser.add_argument("--msrp",    type=float, help="建议零售价（元），不传则自动查询")
     parser.add_argument("--csv",     type=Path,  help="指定现有 CSV 路径（跳过 Stage 1）")
-    parser.add_argument("--out",     type=Path,  help="输出 CSV 路径（默认 data/teardowns/{slug}_teardown.csv）")
+    parser.add_argument("--out",     type=Path,  help="输出 CSV 路径（默认 data/teardowns/{slug}_{YYYYMMDD}_teardown.csv）")
     args = parser.parse_args()
 
     if not args.model and not args.csv:
         parser.error("请提供机型名称或 --csv 路径")
 
-    model = args.model or args.csv.stem.replace("_teardown", "").replace("_", " ")
+    # 从 --csv 反推机型名: 同时剥掉可能的 _YYYYMMDD 日期后缀
+    if args.model:
+        model = args.model
+    else:
+        stem = args.csv.stem.replace("_teardown", "")
+        stem = re.sub(r"_\d{8}$", "", stem)   # 剥日期
+        model = stem.replace("_", " ")
     slug  = _slug(model)
 
     # 解析 MSRP
@@ -795,8 +1111,9 @@ def main() -> None:
         msrp = lookup_msrp_from_web(model)
     msrp = msrp or 5000.0
 
-    # 输出路径
-    csv_out = args.out or TEARDOWN_DIR / f"{slug}_teardown.csv"
+    # 输出路径: 默认带今天日期, 便于版本追溯
+    today_tag = __import__("datetime").date.today().strftime("%Y%m%d")
+    csv_out = args.out or TEARDOWN_DIR / f"{slug}_{today_tag}_teardown.csv"
 
     print(f"\n机型: {model}  |  零售价: {msrp:.0f} 元  |  输出: {csv_out.name}")
     print("=" * 60)
@@ -813,9 +1130,11 @@ def main() -> None:
     print(f"\n✓ 写出 → {csv_out}\n")
 
     # 打印汇总
-    print(f"总计 {len(rows)} 条零件记录")
+    print(f"总计 {len(rows)} 条零件记录 | BOM 合计 ¥{audit['money']['grand_total']:.2f}")
     if audit["alerts"]:
-        print(f"⚠ {len(audit['alerts'])} 条桶覆盖告警，请核实后人工核准入库")
+        print(f"⚠ {len(audit['alerts'])} 条告警 "
+              f"(覆盖 {len(audit['coverage']['alerts'])} / 占比偏差 {len(audit['money']['bias_alerts'])}), "
+              f"请核实后人工核准入库")
 
 
 if __name__ == "__main__":
