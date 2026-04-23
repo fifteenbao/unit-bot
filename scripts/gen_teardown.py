@@ -113,6 +113,10 @@ def load_csv(path: Path) -> list[dict]:
 
 
 def save_csv(rows: list[dict], path: Path, model: str) -> None:
+    if not rows:
+        # 不写出只有表头的空文件 (避免下次 --csv 加载被骗进 0 行审计)
+        print(f"  ⚠ 零件列表为空, 跳过写出 (避免产生只含表头的文件)")
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     for r in rows:
         r.setdefault("product_source", model)
@@ -362,7 +366,30 @@ def stage1_discovery(model: str, msrp: float) -> list[dict]:
         bucket_section=render_prompt_bucket_section(),
     )
     text = _run_web_agent(_DISCOVERY_SYSTEM, prompt, max_tokens=8192)
-    rows = _extract_json_array(text)
+    try:
+        rows = _extract_json_array(text)
+    except ValueError as e:
+        raise RuntimeError(
+            f"Stage 1 LLM 未返回合法 JSON 数组 (可能未找到机型资料)。\n"
+            f"建议: 换更通用的机型名 (如 '石头G30S Pro' → 'Roborock G30S Pro') 或手工提供拆机 CSV 后用 --csv 加载。\n"
+            f"{e}"
+        ) from e
+    if not rows:
+        # 保留 LLM raw 供排查
+        raw_path = TEARDOWN_DIR / f"{_slug(model)}_stage1_raw.txt"
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_path.write_text(text, encoding="utf-8")
+        raise RuntimeError(
+            f"Stage 1 LLM 返回空数组 [] — 未找到 {model!r} 的拆机情报。\n"
+            f"原始响应已存至: {raw_path}\n"
+            f"常见原因:\n"
+            f"  1. 机型名太小众/冷门, 公开渠道无拆机资料\n"
+            f"  2. 品牌名拼写不匹配 (试试英文名 / 官方全名)\n"
+            f"  3. LLM 认为证据不足, 拒绝虚构 (可接受)\n"
+            f"解决:\n"
+            f"  • 换更准确的机型名, 如 '美的 W20 Pro' → 'Midea W20 Pro' / 'Midea M9 Pro'\n"
+            f"  • 若已有拆机报告, 手工填 CSV 后用 --csv 跳过 Stage 1"
+        )
 
     today = __import__("datetime").date.today().isoformat()
     for r in rows:
@@ -1119,22 +1146,26 @@ def main() -> None:
     print("=" * 60)
 
     # 执行 Pipeline
-    rows, audit = run_pipeline(
-        model=model,
-        msrp=msrp,
-        existing_csv=args.csv,
-    )
+    try:
+        rows, audit = run_pipeline(
+            model=model,
+            msrp=msrp,
+            existing_csv=args.csv,
+        )
+    except RuntimeError as e:
+        print(f"\n❌ {e}")
+        sys.exit(1)
 
     # 保存 CSV
     save_csv(rows, csv_out, model)
-    print(f"\n✓ 写出 → {csv_out}\n")
-
-    # 打印汇总
-    print(f"总计 {len(rows)} 条零件记录 | BOM 合计 ¥{audit['money']['grand_total']:.2f}")
-    if audit["alerts"]:
-        print(f"⚠ {len(audit['alerts'])} 条告警 "
-              f"(覆盖 {len(audit['coverage']['alerts'])} / 占比偏差 {len(audit['money']['bias_alerts'])}), "
-              f"请核实后人工核准入库")
+    if rows:
+        print(f"\n✓ 写出 → {csv_out}\n")
+        # 打印汇总
+        print(f"总计 {len(rows)} 条零件记录 | BOM 合计 ¥{audit['money']['grand_total']:.2f}")
+        if audit["alerts"]:
+            print(f"⚠ {len(audit['alerts'])} 条告警 "
+                  f"(覆盖 {len(audit['coverage']['alerts'])} / 占比偏差 {len(audit['money']['bias_alerts'])}), "
+                  f"请核实后人工核准入库")
 
 
 if __name__ == "__main__":
