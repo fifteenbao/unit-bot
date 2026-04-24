@@ -74,18 +74,28 @@ unit-bot/
 │   ├── api/                    # FastAPI 后端（数据查询 / OCR 识别代理）
 │   └── ui/                     # Next.js 前端（仪表盘 / OCR / 数据浏览）
 │
-├── data/                       # 全部内容私有，不入 git（仅 data/lib/model_aliases.json 例外）
+├── data/                       # 内容私有（仅 data/products/model_aliases.json 入 git）
+│   │                             上游/下游关系由 config.yaml 声明
 │   ├── lib/                    # 标准件库（★ 核心配置）
-│   │   ├── standard_parts.json             # 未收录件基准价 / SoC 参考表 / 伴随件 heuristics
-│   │   └── model_aliases.json              # 公开：国内/海外型号映射
-│   ├── products/               # 市场调研：products.csv + products_db.json
-│   ├── teardowns/              # 竞品拆机：{机型}_{YYYYMMDD}_teardown.csv + fcc/{slug}/
-│   ├── bom/                    # 自家 BOM（私有项目数据，如 C33 成本评估表）
-│   └── components_lib.json     # 旧版兼容出口（由 components_lib.csv 派生）
+│   │   ├── components_lib.csv              # ★ 权威查价表（SKU 级，人工维护 — 无更上游）
+│   │   └── standard_parts.json             # ★ 重要价格参考源：SoC 参考表 / 伴随件 heuristics
+│   │                                         # ↑ 上游: components_lib.csv（人工同步）
+│   ├── products/               # 产品元数据
+│   │   ├── products.csv                    # 市场调研原始表（私有，人工维护 — 无更上游）
+│   │   ├── products_db.json                # 产品主数据库（私有）  ↑ 上游: products.csv（import_products.py）
+│   │   └── model_aliases.json              # 公开：国内/海外型号映射（人工维护 — 无更上游）
+│   ├── teardowns/              # 竞品拆机
+│   │   ├── {机型}_{YYYYMMDD}_teardown.csv  # 下游合并产出         ↑ 上游: fcc/{slug}/*_fcc_*.csv (FCC) + web_search
+│   │   └── fcc/{slug}/                     # FCC 档案区
+│   │       ├── latest.json                 # OCR 原始结果
+│   │       └── {slug}_fcc_{YYYYMMDD}.csv   # 上游 CSV（喂给 gen_teardown）  ↑ 上游: latest.json（OCR）
+│   └── bom/                    # 自家 BOM（私有项目数据，如 C33 成本评估表）
 │
-├── config.yaml                 # 飞书/本地数据源配置（不入 git）
+├── config.yaml                 # ★ 数据源路径配置（入 git，声明所有上下游文件位置）
 └── requirements.txt
 ```
+
+> 上游/下游 → 以 `config.yaml` 为单一事实源声明。飞书 `APP_ID` / `APP_SECRET` 等 secrets 走环境变量，不进 config.yaml。
 
 ---
 
@@ -178,7 +188,7 @@ core/bucket_framework.py         ← 加载器 API
 |   | `fcc_dir` | `data/teardowns/fcc` | FCC 采集结果（独立） |
 | `components` | `lib_csv` | `data/lib/components_lib.csv` | 标准件权威价 |
 |   | `standard_parts_json` | `data/lib/standard_parts.json` | 未收录件 fallback |
-|   | `model_aliases_json` | `data/lib/model_aliases.json` | 国内/海外型号映射 |
+|   | `model_aliases_json` | `data/products/model_aliases.json` | 国内/海外型号映射 |
 | `framework` | `json` | `core/bom_8bucket_framework.json` | 8 桶单一事实源 |
 |   | `loader` | `core.bucket_framework` | Python 加载器模块路径 |
 | `feishu` | `*_obj_token` | (空) | 可选展示层只写同步 |

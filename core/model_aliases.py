@@ -1,7 +1,7 @@
 """
 国内/海外型号双向模糊匹配
 
-数据来源：data/model_aliases.json
+数据来源：data/products/model_aliases.json
 用途：FCC ID.io 搜索时将国内型号转换为海外型号（FCC 以海外型号申报），
       以及将用户输入的海外型号规范化为国内型号（产品数据库主键）。
 """
@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 from typing import NamedTuple
 
-ALIASES_FILE = Path(__file__).parent.parent / "data" / "lib" / "model_aliases.json"
+ALIASES_FILE = Path(__file__).parent.parent / "data" / "products" / "model_aliases.json"
 
 
 class AliasMatch(NamedTuple):

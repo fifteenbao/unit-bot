@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import csv
 import json
 import re
 import sys
@@ -456,6 +457,55 @@ def save_fcc(model: str, fcc_id: str, data: dict) -> Path:
     return fcc_file
 
 
+# CSV schema 对齐 scripts/gen_teardown.py::CSV_FIELDS
+# gen_teardown.py 会扫 data/teardowns/fcc/{slug}/*_fcc_*.csv 作为上游喂入 Stage 1。
+_TEARDOWN_CSV_FIELDS = [
+    "bom_bucket", "section", "name", "model", "type",
+    "spec", "manufacturer", "qty", "source_url", "updated_at", "product_source",
+    "_unit_price", "_line_cost", "_price_src",
+]
+
+
+def write_fcc_csv(model: str, fcc_id: str, data: dict) -> Path | None:
+    """把 FCC OCR 产出的 parts 写成上游 CSV，schema 对齐拆机 CSV。
+
+    parts 为空时不写（OCR 未接入或识别失败），返回 None。
+    """
+    parts = data.get("parts") or []
+    if not parts:
+        return None
+
+    slug     = _slug(model)
+    out_dir  = FCC_DIR / slug
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fetched  = data.get("fetched_at") or date.today().isoformat()
+    date_tag = fetched.replace("-", "")
+    csv_path = out_dir / f"{slug}_fcc_{date_tag}.csv"
+    application_url = f"https://fccid.io/{fcc_id}"
+
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=_TEARDOWN_CSV_FIELDS, extrasaction="ignore")
+        w.writeheader()
+        for p in parts:
+            w.writerow({
+                "bom_bucket":     p.get("bom_bucket") or "",
+                "section":        p.get("section") or "",
+                "name":           p.get("name") or "",
+                "model":          p.get("model") or "",
+                "type":           p.get("type") or "",
+                "spec":           p.get("spec") or "",
+                "manufacturer":   p.get("manufacturer") or "",
+                "qty":            p.get("qty") or 1,
+                "source_url":     application_url,
+                "updated_at":     fetched,
+                "product_source": "fcc",
+                "_unit_price":    p.get("unit_price") or "",
+                "_line_cost":     "",  # Stage 4 填
+                "_price_src":     "",  # Stage 4 填
+            })
+    return csv_path
+
+
 # ── CLI ───────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -479,6 +529,9 @@ def main() -> None:
             print(f"  • [{p.get('bom_bucket')}] {p.get('name')} {p.get('model')} ({p.get('manufacturer')})")
         pdfs = list((out_dir / "pdfs").glob("*.pdf")) if (out_dir / "pdfs").exists() else []
         print(f"  本地 PDF：{len(pdfs)} 份 → {out_dir / 'pdfs'}")
+        csv_path = write_fcc_csv(args.model, data.get("fcc_id", slug), data)
+        if csv_path:
+            print(f"  上游 CSV：{csv_path}（gen_teardown.py 将作为 Stage 1 上游）")
         return
 
     try:
@@ -498,6 +551,9 @@ def main() -> None:
     print(f"  识别零件：{len(parts)} 个")
     for p in parts:
         print(f"  • [{p.get('bom_bucket')}] {p.get('name')} {p.get('model')} ({p.get('manufacturer')})")
+    csv_path = write_fcc_csv(args.model, fcc_id, data)
+    if csv_path:
+        print(f"  上游 CSV：{csv_path}（gen_teardown.py 将作为 Stage 1 上游）")
 
 
 if __name__ == "__main__":

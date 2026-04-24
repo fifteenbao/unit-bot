@@ -1,8 +1,9 @@
 # 环境变量（包含 API Key 等敏感信息）
 .env
 
-# 用户数据源配置（含私有飞书链接 / 本地路径）
-config.yaml
+# 用户数据源配置 — config.yaml 现在入 git（只存路径声明，secrets 走环境变量）
+# 保留 config.local.yaml 作为本地覆盖入口（不入 git）
+config.local.yaml
 
 # 私有拆机数据（Excel / CSV / 原始数据）
 data/*.xlsx
@@ -10,7 +11,10 @@ data/*.xls
 data/*.csv
 
 # 运行时数据库与私有数据（不入 git）
-data/products/
+# 注意：data/products/ 下的 model_aliases.json 需公开，因此改用文件级 pattern
+# 以便下方 `!data/products/model_aliases.json` 白名单生效
+data/products/*.csv
+data/products/*.json
 data/teardowns/
 data/lib/
 data/bom/
@@ -25,12 +29,11 @@ LOCAL_TEST.md
 
 # 旧路径兼容（迁移后保留，防止意外提交）
 data/products_db.json
-data/components_lib.json
 data/product_specs.json
 data/产品数据库.csv
 
 # 公开数据（入 git）
-!data/lib/model_aliases.json
+!data/products/model_aliases.json
 
 # 价格变动历史（本地留存，不入 git）
 data/lib/price_history.csv

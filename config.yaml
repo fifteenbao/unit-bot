@@ -1,0 +1,37 @@
+# unit-bot 数据源配置（单一事实源 — 声明所有上下游文件位置）
+#
+# 本文件入 git，只存路径；secrets（FEISHU_APP_ID/SECRET 等）走环境变量。
+# 所有相对路径基于项目根目录解析。
+#
+# 记法：upstream 字段声明该文件的来源；无 upstream 表示人工维护顶点。
+# ══════════════════════════════════════════════════════════════════
+
+# 产品数据库 — 市场调研、规格参数、MSRP
+products:
+  csv:          "data/products/products.csv"         # 人工维护顶点（无 upstream）
+  db_json:      "data/products/products_db.json"     # 运行时缓存
+  db_json_upstream: "data/products/products.csv"     # 上游（import_products.py 消费）
+  fields_required: ["产品名称", "厂商名称", "价格"]    # 导入时必填列
+
+# 拆机数据库 — 各机型 BOM 明细
+teardown:
+  dir:          "data/teardowns"                     # 下游合并产出目录（gen_teardown.py 产出）
+  dir_upstreams:                                     # 上游候选列表（按优先级）
+    - "data/teardowns/fcc/{slug}/{slug}_fcc_*.csv"   # FCC 拆解数据（官方照片/PDF OCR）
+    - "web_search"                                   # Stage 1 网络调研（非文件）
+  fcc_dir:      "data/teardowns/fcc"                 # FCC 档案目录（fetch_fcc.py 产出）
+  csv_suffix:   "_teardown.csv"                      # 最终 CSV 命名规则（{slug}_{date}_teardown.csv）
+  fcc_csv_pattern: "{slug}_fcc_{date}.csv"           # FCC 上游 CSV 命名规则
+
+# 标准件库 — 权威定价、桶归类、型号映射
+components:
+  lib_csv:      "data/lib/components_lib.csv"        # ★ 权威查价顶点（人工维护，无 upstream）
+  standard_parts_json: "data/lib/standard_parts.json" # ★ 重要价格参考源 / SoC 参考表 / 伴随件 heuristics
+  standard_parts_upstream: "data/lib/components_lib.csv"  # 上游（人工同步镜像 SoC 与兜底价）
+  model_aliases_json:  "data/products/model_aliases.json" # 国内/海外型号映射（公开，入 git）
+  price_history_csv:   "data/lib/price_history.csv"  # 价格变动审计日志
+
+# BOM 8 桶框架 — 桶定义/典型子项/行业基准占比（单一事实源）
+framework:
+  json:         "core/bom_8bucket_framework.json"    # 人工维护顶点（无 upstream）
+  loader:       "core.bucket_framework"              # Python 加载器模块路径
