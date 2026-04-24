@@ -53,7 +53,8 @@ unit-bot/
 │   ├── config.py               # config.yaml 加载
 │   ├── db.py                   # 产品数据库读写
 │   ├── bom_loader.py           # 拆机数据只读
-│   ├── components_lib.py       # 标准件库 CRUD
+│   ├── bom_rules.py            # BOM 归桶规则 / 关键词匹配
+│   ├── components_lib.py       # 标准件库 CRUD（消费 data/lib/components_lib.csv）
 │   ├── model_aliases.py        # 国内/海外型号别名匹配
 │   ├── feishu_sync.py          # 飞书单向同步
 │   ├── bucket_framework.py     # ★ 8 桶框架加载器（prompt 渲染 / 覆盖审计）
@@ -63,20 +64,24 @@ unit-bot/
 │   ├── import_products.py      # ① 产品库导入：products.csv → products_db.json
 │   ├── gen_teardown.py         # ② 拆机 4-Stage Pipeline（消费 core/bucket_framework）
 │   ├── fetch_fcc.py            # ② FCC 照片 / PDF 抓取（OCR 待接入）
-│   ├── build_components.py     # ③ 拆机 CSV → components_lib.csv（不覆盖人工价格）
+│   ├── build_components.py     # ③ 拆机 CSV → data/lib/components_lib.csv（不覆盖人工价格）
 │   ├── update_prices.py        # ③ 动态爬价 → 更新 components_lib + price_history
-│   └── export_framework_csv.py # ★ JSON 模板 → data/lib/*.csv（对账工作表）
+│   ├── export_framework_csv.py # ★ JSON 模板 → data/lib/*.csv（对账工作表）
+│   ├── migrate_lib_price_tier.py  # 价格分层字段迁移工具
+│   └── start.py                # Agent 启动入口
 │
 ├── web/                        # 前端 Web UI（Next.js + FastAPI，见下方章节）
 │   ├── api/                    # FastAPI 后端（数据查询 / OCR 识别代理）
 │   └── ui/                     # Next.js 前端（仪表盘 / OCR / 数据浏览）
 │
-├── data/                       # 全部内容私有，不入 git（仅 model_aliases.json 例外）
-│   ├── products/               # 市场调研：products.csv + products_db.json
-│   ├── teardowns/              # 竞品拆机：{机型}_teardown.csv + fcc/{slug}/
-│   ├── lib/                    # 标准件库：components_lib.csv + standard_parts.json
+├── data/                       # 全部内容私有，不入 git（仅 data/lib/model_aliases.json 例外）
+│   ├── lib/                    # 标准件库（★ 核心配置）
+│   │   ├── standard_parts.json             # 未收录件基准价 / SoC 参考表 / 伴随件 heuristics
 │   │   └── model_aliases.json              # 公开：国内/海外型号映射
-│   └── bom/                    # 自家 BOM（私有项目数据）
+│   ├── products/               # 市场调研：products.csv + products_db.json
+│   ├── teardowns/              # 竞品拆机：{机型}_{YYYYMMDD}_teardown.csv + fcc/{slug}/
+│   ├── bom/                    # 自家 BOM（私有项目数据，如 C33 成本评估表）
+│   └── components_lib.json     # 旧版兼容出口（由 components_lib.csv 派生）
 │
 ├── config.yaml                 # 飞书/本地数据源配置（不入 git）
 └── requirements.txt
@@ -381,10 +386,18 @@ python scripts/export_framework_csv.py
 
 ### Agent 交互（接入 OpenClaw 后）
 
-> 石头 G30S Pro，分析 BOM 成本
-> 越障 4cm 的产品用了哪些驱动轮电机？
-> 对比 石头P10pro 和 科沃斯X2pro 的基站系统成本差异
-> 列出所有拆机数据中出现过的 SoC 型号
+统一使用 `/命令` 快捷方式，详见 [`SKILL.md`](SKILL.md#常用命令)。
+
+| 命令 | 用途 | 示例 |
+|------|------|------|
+| `/bom <品牌> <型号>` | BOM 完整分析（核心命令） | `/bom 石头 G30S Pro` |
+| `/parts <关键词>` | 零部件跨机型查询 | `/parts 越障 4cm 驱动轮电机` |
+| `/cut <品牌> <型号>` | 降本机会识别 | `/cut 石头 G20S` |
+| `/vs <A> vs <B> [--bucket <桶>]` | 子系统/整机对标 | `/vs 石头P10pro vs 科沃斯X2pro --bucket dock_station` |
+| `/find <关键词\|桶>` | 数据库直查 | `/find SoC`（或 `/find compute_electronics`） |
+| `/framework` | 导出 8 桶对账 CSV | `/framework` |
+
+> 仍兼容自然语言输入（如"石头 G30S Pro，分析 BOM 成本"），Agent 自动解析为对应命令。
 
 ### Web UI
 

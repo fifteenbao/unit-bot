@@ -15,9 +15,13 @@ data/teardowns/
 data/lib/
 data/bom/
 
-# 内部项目专用脚本（含机型标识，不入 git）
+# 内部项目专用脚本（含机型标识 / 本地调试，不入 git）
 scripts/seed_*.py
 scripts/analyze_*.py
+scripts/test_local.py
+
+# 本地测试教程（私有，不入 git）
+LOCAL_TEST.md
 
 # 旧路径兼容（迁移后保留，防止意外提交）
 data/products_db.json
