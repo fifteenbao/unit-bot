@@ -1,18 +1,18 @@
 """
 国内/海外型号双向模糊匹配
 
-数据来源：data/products/model_aliases.json
+数据来源：data/products/model_aliases.csv（人工维护顶点，入 git）
 用途：FCC ID.io 搜索时将国内型号转换为海外型号（FCC 以海外型号申报），
       以及将用户输入的海外型号规范化为国内型号（产品数据库主键）。
 """
 from __future__ import annotations
 
-import json
+import csv
 import re
 from pathlib import Path
 from typing import NamedTuple
 
-ALIASES_FILE = Path(__file__).parent.parent / "data" / "products" / "model_aliases.json"
+ALIASES_FILE = Path(__file__).parent.parent / "data" / "products" / "model_aliases.csv"
 
 
 class AliasMatch(NamedTuple):
@@ -28,19 +28,19 @@ def _normalize(s: str) -> str:
 
 
 def _load() -> dict[str, list[dict]]:
-    """加载映射表，统一成 {brand: [{cn_model, global_model, ...}]} 格式。"""
+    """加载 model_aliases.csv，返回 {brand: [{cn_model, global_model}]} 格式。"""
     if not ALIASES_FILE.exists():
         return {}
-    data = json.loads(ALIASES_FILE.read_text(encoding="utf-8"))
     result: dict[str, list[dict]] = {}
-    for k, v in data.items():
-        if k.startswith("_"):
-            continue
-        # 兼容两种格式：list 或 {"aliases": [...], ...}
-        if isinstance(v, list):
-            result[k] = v
-        elif isinstance(v, dict) and "aliases" in v:
-            result[k] = v["aliases"]
+    with open(ALIASES_FILE, encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            brand = row.get("brand", "").strip()
+            if not brand:
+                continue
+            result.setdefault(brand, []).append({
+                "cn_model":     row.get("cn_model", "").strip(),
+                "global_model": row.get("global_model", "").strip(),
+            })
     return result
 
 

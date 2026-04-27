@@ -30,7 +30,7 @@
 
 ### 🚧 进行中
 
-- FCC / 拆机照片 **OCR + 元器件自动归类**（当前 `fetch_fcc.py` 仅抓 PDF，视觉识别待接入）。
+- FCC / 拆机照片 **OCR + 元器件自动归类**：`fetch_fcc.py` 抓 PDF → 视觉 OCR → 输出 `{slug}_fcc_{date}.csv`，`gen_teardown.py` 自动作为 Stage 1 上游（FCC 优先于 web_search）。
 - **Web UI**：OCR 识别上传、数据库浏览与检索（见下方"前端" 章节）。
 - **动态价格爬取**：`update_prices.py` 已有框架，数据源（立创 / Digi-Key / 1688）接入稳定性优化中。
 
@@ -74,16 +74,18 @@ unit-bot/
 │   ├── api/                    # FastAPI 后端（数据查询 / OCR 识别代理）
 │   └── ui/                     # Next.js 前端（仪表盘 / OCR / 数据浏览）
 │
-├── data/                       # 内容私有（仅 data/products/model_aliases.json 入 git）
+├── data/                       # 内容私有（仅 data/products/model_aliases.csv 入 git）
 │   │                             上游/下游关系由 config.yaml 声明
 │   ├── lib/                    # 标准件库（★ 核心配置）
 │   │   ├── components_lib.csv              # ★ 权威查价表（SKU 级，人工维护 — 无更上游）
 │   │   └── standard_parts.json             # ★ 重要价格参考源：SoC 参考表 / 伴随件 heuristics
 │   │                                         # ↑ 上游: components_lib.csv（人工同步）
 │   ├── products/               # 产品元数据
-│   │   ├── products.csv                    # 市场调研原始表（私有，人工维护 — 无更上游）
-│   │   ├── products_db.json                # 产品主数据库（私有）  ↑ 上游: products.csv（import_products.py）
-│   │   └── model_aliases.json              # 公开：国内/海外型号映射（人工维护 — 无更上游）
+│   │   ├── products.csv                    # 市场调研原始表（私有，人工维护）
+│   │   ├── model_aliases.csv               # 公开：国内/海外型号映射（人工维护，入 git）
+│   │   │                                     # 字段：brand, cn_model, global_model
+│   │   └── products_db.json                # 运行时缓存（私有）↑ 上游: products.csv
+│   │       model_aliases.json              # 运行时产物（私有）↑ 上游: model_aliases.csv
 │   ├── teardowns/              # 竞品拆机
 │   │   ├── {机型}_{YYYYMMDD}_teardown.csv  # 下游合并产出         ↑ 上游: fcc/{slug}/*_fcc_*.csv (FCC) + web_search
 │   │   └── fcc/{slug}/                     # FCC 档案区
@@ -114,24 +116,24 @@ unit-bot/
                                     ↕  Agent 读写 / 飞书推送
 
 ② 竞品拆机
+   fetch_fcc.py  FCC 图/PDF 抓取 + 视觉 OCR
+     └─→ data/teardowns/fcc/{slug}/{slug}_fcc_{date}.csv  ← Stage 1 上游（FCC 优先）
+
    机型名
      └─→ gen_teardown.py (4-Stage, 对齐 core/bom_8bucket_framework.json)
-           Stage 1 Discovery   爬 MyFixGuide/知乎/FCC  → 元器件型号 + confidence
-                               （prompt 从 framework 动态渲染桶清单）
+           Stage 0 FCC 上游    自动载入 fcc/{slug}/*_fcc_*.csv（有则注入，无则跳过）
+           Stage 1 Discovery   web_search 补缺口（已知 FCC 件不重复）
            Stage 2 Enrichment  SoC heuristic → 伴随件（PMIC/RAM/ROM）
            Stage 3 Coverage    对照 framework typical_items → 报缺失关键子项
            Stage 4 Aggregate   三级查价 (components_lib → standard_parts → 兜底)
                                按桶汇总 + ±5% 占比偏差告警 + BOM/MSRP 比
-     └─→ fetch_fcc.py         FCC 图/PDF 抓取
-                              [🚧 OCR 识别待接入 → 自动归类到 8 桶]
-     └─→ data/teardowns/{机型}_teardown.csv（人工核准后）
+     └─→ data/teardowns/{机型}_{date}_teardown.csv（人工核准后）
           └─→ build_components.py ─→ components_lib.csv（聚合更新）
 
 ③ 标准件库
    update_prices.py  ← web 爬虫 (立创/Digi-Key/1688)
-     └─→ components_lib.csv   (更新 cost_min/cost_max)
-     └─→ price_history.csv    (变动审计)
-   standard_parts.json        ← 未收录件人工 fallback
+     └─→ components_lib.csv   (更新 cost_min/cost_max + last_updated)
+   standard_parts.json        ← SoC 参考表 / 伴随件 heuristics，upstream: components_lib.csv
 
 ④ 自家 BOM 成本分析（内部项目，不公开）
    原始 BOM.csv
@@ -177,23 +179,7 @@ core/bucket_framework.py         ← 加载器 API
 
 ## 数据库配置（`config.yaml`）
 
-所有数据路径集中在根目录 [`config.yaml`](config.yaml)，便于 Skill / 脚本统一定位。编辑后立即生效，无需重启。
-
-| 分区 | 字段 | 默认路径 | 说明 |
-|------|------|---------|------|
-| `products` | `csv` | `data/products/products.csv` | 人工维护输入源 |
-|   | `db_json` | `data/products/products_db.json` | 运行时缓存 |
-|   | `fields_required` | 见 yaml | 导入时必填列 |
-| `teardown` | `dir` | `data/teardowns` | 每机型一份 `{slug}_teardown.csv` |
-|   | `fcc_dir` | `data/teardowns/fcc` | FCC 采集结果（独立） |
-| `components` | `lib_csv` | `data/lib/components_lib.csv` | 标准件权威价 |
-|   | `standard_parts_json` | `data/lib/standard_parts.json` | 未收录件 fallback |
-|   | `model_aliases_json` | `data/products/model_aliases.json` | 国内/海外型号映射 |
-| `framework` | `json` | `core/bom_8bucket_framework.json` | 8 桶单一事实源 |
-|   | `loader` | `core.bucket_framework` | Python 加载器模块路径 |
-| `feishu` | `*_obj_token` | (空) | 可选展示层只写同步 |
-
-> 未配置的 feishu 字段自动静默跳过；本地文件路径支持自定义，Agent 和所有脚本通过相同配置定位数据。
+所有数据路径集中在根目录 [`config.yaml`](config.yaml)——人工维护文件、运行时产物、上下游关系均在此声明。编辑后立即生效，无需重启。
 
 ---
 

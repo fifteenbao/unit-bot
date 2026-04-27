@@ -16,10 +16,10 @@ FCC 独立采集模块（fccid.io + 本地图片缓存 + 视觉 OCR）
       {doc_type}_{page}.png
 
 用法：
-    python scripts/fetch_fcc.py "石头G30S Pro"
-    python scripts/fetch_fcc.py "科沃斯X8 Pro" --fcc-id 2A6HE-DEX8PRO
-    python scripts/fetch_fcc.py "石头P20 Ultra Plus" --force
-    AIHUBMIX_API_KEY=xxx AIHUBMIX_MODEL=gpt-4o python scripts/fetch_fcc.py "石头S8 MaxV Ultra"
+    python scripts/fetch_fcc.py "石头G30SPro"
+    python scripts/fetch_fcc.py "科沃斯X8Pro" --fcc-id 2A6HE-DEX8PRO
+    python scripts/fetch_fcc.py "石头P20UltraPlus" --force //强制重新采集
+    AIHUBMIX_API_KEY=xxx AIHUBMIX_MODEL=gpt-4o python scripts/fetch_fcc.py "石头S8MaxVUltra"
 """
 from __future__ import annotations
 

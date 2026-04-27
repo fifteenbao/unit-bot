@@ -1,37 +1,47 @@
 # unit-bot 数据源配置（单一事实源 — 声明所有上下游文件位置）
-#
-# 本文件入 git，只存路径；secrets（FEISHU_APP_ID/SECRET 等）走环境变量。
-# 所有相对路径基于项目根目录解析。
-#
-# 记法：upstream 字段声明该文件的来源；无 upstream 表示人工维护顶点。
-# ══════════════════════════════════════════════════════════════════
+# 入 git，只存路径；secrets 走环境变量。所有相对路径基于项目根目录解析。
+# 无 upstream 注释 = 人工维护顶点。
 
 # 产品数据库 — 市场调研、规格参数、MSRP
 products:
-  csv:          "data/products/products.csv"         # 人工维护顶点（无 upstream）
-  db_json:      "data/products/products_db.json"     # 运行时缓存
-  db_json_upstream: "data/products/products.csv"     # 上游（import_products.py 消费）
-  fields_required: ["产品名称", "厂商名称", "价格"]    # 导入时必填列
+  csv:          "data/products/products.csv"          # 人工维护顶点；字段见文件首行
+  aliases_csv:  "data/products/model_aliases.csv"     # 国内/海外型号映射（人工维护，入 git）
+                                                      # 字段：brand, cn_model, global_model
+                                                      # 用途：FCC 搜索时将国内型号转为海外申报名
+  # 运行时产物（不入 git，由脚本生成，勿手动编辑）
+  # data/products/products_db.json   upstream: products.csv
+  # data/products/model_aliases.json upstream: model_aliases.csv
 
 # 拆机数据库 — 各机型 BOM 明细
 teardown:
-  dir:          "data/teardowns"                     # 下游合并产出目录（gen_teardown.py 产出）
-  dir_upstreams:                                     # 上游候选列表（按优先级）
-    - "data/teardowns/fcc/{slug}/{slug}_fcc_*.csv"   # FCC 拆解数据（官方照片/PDF OCR）
-    - "web_search"                                   # Stage 1 网络调研（非文件）
-  fcc_dir:      "data/teardowns/fcc"                 # FCC 档案目录（fetch_fcc.py 产出）
-  csv_suffix:   "_teardown.csv"                      # 最终 CSV 命名规则（{slug}_{date}_teardown.csv）
-  fcc_csv_pattern: "{slug}_fcc_{date}.csv"           # FCC 上游 CSV 命名规则
+  dir: "data/teardowns"    # 产出根目录；fcc/ 子目录由 fetch_fcc.py 自动创建
+                           # 人工录入字段：
+                           #   bom_bucket   — 8桶 key（如 compute_electronics）
+                           #   section      — 子分类（如 主板、传感器）
+                           #   name         — 零件中文名
+                           #   model        — 型号（如 RK3588S）
+                           #   type         — 类型（IC / Motor / Sensor …）
+                           #   spec         — 规格参数
+                           #   manufacturer — 供应商/品牌
+                           #   qty          — 数量
+                           #   source_url   — 来源链接
+                           #   updated_at   — 录入日期 YYYY-MM-DD
+                           #   product_source — 机型名（如 石头G30S Pro）
 
-# 标准件库 — 权威定价、桶归类、型号映射
+# 标准件库 — 权威定价、桶归类
 components:
-  lib_csv:      "data/lib/components_lib.csv"        # ★ 权威查价顶点（人工维护，无 upstream）
-  standard_parts_json: "data/lib/standard_parts.json" # ★ 重要价格参考源 / SoC 参考表 / 伴随件 heuristics
-  standard_parts_upstream: "data/lib/components_lib.csv"  # 上游（人工同步镜像 SoC 与兜底价）
-  model_aliases_json:  "data/products/model_aliases.json" # 国内/海外型号映射（公开，入 git）
-  price_history_csv:   "data/lib/price_history.csv"  # 价格变动审计日志
+  lib_csv: "data/lib/components_lib.csv"              # ★ 权威查价顶点（人工维护，入 git）
+                                                      # 字段：id, bom_bucket, bom_bucket_cn,
+                                                      #       name, name_en, tier,
+                                                      #       model_numbers, spec,
+                                                      #       cost_min, cost_max, unit,
+                                                      #       suppliers, confidence,
+                                                      #       models, last_updated
+                                                      # 价格变动：直接修改 cost_min/cost_max 并更新 last_updated
+  # 运行时产物（不入 git，由脚本生成，勿手动编辑）
+  # data/lib/standard_parts.json  upstream: components_lib.csv（SoC 参考表 / 伴随件 heuristics）
 
-# BOM 8 桶框架 — 桶定义/典型子项/行业基准占比（单一事实源）
+# BOM 8 桶框架
 framework:
-  json:         "core/bom_8bucket_framework.json"    # 人工维护顶点（无 upstream）
-  loader:       "core.bucket_framework"              # Python 加载器模块路径
+  json:   "core/bom_8bucket_framework.json"    # 人工维护顶点
+  loader: "core.bucket_framework"

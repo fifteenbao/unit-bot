@@ -12,7 +12,7 @@ data/*.csv
 
 # 运行时数据库与私有数据（不入 git）
 # 注意：data/products/ 下的 model_aliases.json 需公开，因此改用文件级 pattern
-# 以便下方 `!data/products/model_aliases.json` 白名单生效
+# 以便下方 `!data/products/model_aliases.csv` 白名单生效
 data/products/*.csv
 data/products/*.json
 data/teardowns/
@@ -33,7 +33,7 @@ data/product_specs.json
 data/产品数据库.csv
 
 # 公开数据（入 git）
-!data/products/model_aliases.json
+!data/products/model_aliases.csv
 
 # 价格变动历史（本地留存，不入 git）
 data/lib/price_history.csv
