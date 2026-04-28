@@ -1,13 +1,24 @@
 """
-拆机 CSV → 标准件库构建工具
+拆机 / FCC CSV → 标准件库构建工具
 
-读取 data/teardowns/*.csv，汇总重建 data/lib/components_lib.csv。
-teardown CSV 中的 confidence 字段（estimate/web/fcc/teardown/confirmed）
-原样传递到 lib，作为每条件的信息来源标注。
+读取以下两类数据源，汇总重建 data/lib/components_lib.csv：
+  1. data/teardowns/*.csv               — gen_teardown 产出的整机拆机 CSV
+  2. data/teardowns/fcc/*/*_fcc_*.csv   — fetch_fcc.py ocr 产出的 FCC 上游 CSV（直通）
+
+【数据治理：置信度白名单】
+  标准件库是"权威数据"，只接受高置信度来源：
+    ✓ confirmed  人工/实物核实
+    ✓ teardown   实物拆机 CSV
+    ✓ fcc        FCC 文档 OCR 识别（监管申报材料，可靠）
+    ✗ inferred / estimate / web — 直接丢弃，不污染权威库
+
+  因此：FCC 数据可以**直接**跑 build_components 入库，无需先经 gen_teardown
+  （gen_teardown 输出包含 Stage 2 启发式推导的 inferred 行，会被白名单过滤掉）。
 
 用法：
-  python scripts/build_components.py           # 读取 data/teardowns/ 所有 CSV
-  python scripts/build_components.py data/teardowns/石头G30SPro_teardown.csv  # 单文件
+  python scripts/build_components.py                                  # 读取所有 teardowns + fcc CSV
+  python scripts/build_components.py data/teardowns/fcc/石头G30SPro/  # 只重建该机型 FCC 数据
+  python scripts/build_components.py data/teardowns/某机型_teardown.csv  # 单文件
 """
 from __future__ import annotations
 
@@ -22,10 +33,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 DATA_DIR     = Path(__file__).parent.parent / "data"
 TEARDOWN_DIR = DATA_DIR / "teardowns"
+FCC_DIR      = TEARDOWN_DIR / "fcc"
 LIB_DIR      = DATA_DIR / "lib"
 LIB_CSV      = LIB_DIR / "components_lib.csv"
 
 TODAY = date.today().isoformat()  # e.g. "2026-04-17"
+
+# 标准件库置信度白名单：只允许高可信来源进入权威库
+TRUSTED_CONFIDENCE = {"confirmed", "teardown", "fcc"}
 
 LIB_FIELDS = [
     "id", "bom_bucket", "bom_bucket_cn", "name", "name_en",
@@ -228,14 +243,43 @@ def _make_id(bucket: str, name: str) -> str:
 
 # ── 主流程 ──────────────────────────────────────────────────────
 
-def load_teardown_csv(csv_path: Path) -> list[dict]:
-    """读取单个 teardown CSV，返回原始行列表（保留 confidence 来源字段）"""
-    rows = []
+def load_teardown_csv(csv_path: Path) -> tuple[list[dict], int]:
+    """
+    读取单个 CSV（teardown 或 FCC 上游），按 TRUSTED_CONFIDENCE 白名单过滤。
+    返回 (通过白名单的行, 被丢弃的行数)。
+    """
+    rows: list[dict] = []
+    dropped = 0
     with csv_path.open(encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
-            if row.get("name", "").strip():
-                rows.append(row)
-    return rows
+            if not row.get("name", "").strip():
+                continue
+            conf = (row.get("confidence") or "").strip().lower()
+            # FCC 上游 CSV 默认置信度视为 fcc（即使字段缺失）
+            if not conf and "/fcc/" in str(csv_path).replace("\\", "/"):
+                conf = "fcc"
+                row["confidence"] = "fcc"
+            if conf not in TRUSTED_CONFIDENCE:
+                dropped += 1
+                continue
+            rows.append(row)
+    return rows, dropped
+
+
+def collect_csv_files() -> list[Path]:
+    """收集所有合法输入：data/teardowns/*.csv + data/teardowns/fcc/*/*_fcc_*.csv。"""
+    teardown_csvs = sorted(TEARDOWN_DIR.glob("*.csv"))
+    fcc_csvs = sorted(FCC_DIR.glob("*/*_fcc_*.csv")) if FCC_DIR.exists() else []
+    return teardown_csvs + fcc_csvs
+
+
+def expand_path(arg: Path) -> list[Path]:
+    """命令行参数：文件 → 单文件；目录 → 目录下所有 *.csv。"""
+    if arg.is_file() and arg.suffix == ".csv":
+        return [arg]
+    if arg.is_dir():
+        return sorted(arg.glob("*.csv"))
+    return []
 
 
 def load_existing_lib() -> dict[str, dict]:
@@ -267,6 +311,8 @@ def merge_prices(new_rows: list[dict], existing: dict[str, dict]) -> list[dict]:
 def main(csv_files: list[Path]):
     LIB_DIR.mkdir(exist_ok=True)
     all_rows: list[dict] = []
+    total_dropped = 0
+    src_stats: Counter = Counter()  # 按 confidence 统计被采纳的行数
 
     try:
         from core.feishu_sync import sync_components_lib
@@ -274,9 +320,24 @@ def main(csv_files: list[Path]):
         sync_components_lib = lambda *a, **kw: None
 
     for csv_path in csv_files:
-        rows = load_teardown_csv(csv_path)
-        print(f"  ✓ {csv_path.name}: {len(rows)} 条")
+        rows, dropped = load_teardown_csv(csv_path)
+        total_dropped += dropped
+        for r in rows:
+            src_stats[(r.get("confidence") or "").lower()] += 1
+        tag = "FCC" if "/fcc/" in str(csv_path).replace("\\", "/") else "teardown"
+        msg = f"  ✓ [{tag}] {csv_path.name}: {len(rows)} 条采纳"
+        if dropped:
+            msg += f"，{dropped} 条被白名单过滤"
+        print(msg)
         all_rows.extend(rows)
+
+    if total_dropped:
+        print(f"\n  共过滤 {total_dropped} 条低置信度数据"
+              f"（仅接受 {sorted(TRUSTED_CONFIDENCE)}）")
+    if src_stats:
+        print(f"  采纳来源分布: " + " · ".join(
+            f"{src}={cnt}" for src, cnt in sorted(src_stats.items())
+        ))
 
     existing = load_existing_lib()
     lib = build_lib(all_rows)
@@ -301,12 +362,17 @@ def main(csv_files: list[Path]):
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
-        files = [Path(a) for a in sys.argv[1:] if Path(a).suffix == ".csv"]
-    else:
-        files = sorted(TEARDOWN_DIR.glob("*.csv"))
+        files: list[Path] = []
+        for a in sys.argv[1:]:
+            files.extend(expand_path(Path(a)))
         if not files:
-            print(f"{TEARDOWN_DIR} 目录下没有找到 CSV 文件")
+            print("未找到合法 CSV 输入（支持单文件或目录）")
+            sys.exit(1)
+    else:
+        files = collect_csv_files()
+        if not files:
+            print(f"{TEARDOWN_DIR} 目录下没有找到 CSV 文件（含 fcc/ 子目录）")
             sys.exit(1)
 
-    print(f"读取 {len(files)} 个 teardown CSV...")
+    print(f"读取 {len(files)} 个 CSV (teardown + FCC)...")
     main(files)
