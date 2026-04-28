@@ -1,25 +1,30 @@
 #!/usr/bin/env python3
 """
-FCC 独立采集模块（fccid.io + 本地图片缓存 + 视觉 OCR）
+FCC 独立采集模块（fccid.io + 本地 PDF 缓存 + 视觉 OCR）
 
-流程：
-  1. fccid.io 产品页解析文档列表（静态 HTML，无需 JS 渲染）
-  2. 下载 Internal Photos / Parts List PDF → 转换为 PNG 存本地
-  3. 用视觉模型对本地图片做 OCR，识别 PCB 芯片丝印
-  4. 输出结构化 JSON → data/fcc/{slug}/
+两步工作流：
+  Step 1 · fcc_find — 查找 FCC ID，列出文档链接（不下载），供人工确认后进行下一步
+  Step 2 · fcc_ocr  — 下载目标 PDF 并用视觉模型 OCR，识别 PCB 芯片丝印
 
 目录结构：
-  data/fcc/{slug}/
-    {fcc_id}.json     ← 识别结果
+  data/teardowns/fcc/{slug}/
+    links.json        ← fcc_find 产出：FCC ID + 文档链接列表
+    {fcc_id}.json     ← fcc_ocr 产出：OCR 识别结果
     latest.json       ← 同上，快捷入口供 gen_teardown.py 读取
-    images/           ← 原始 PNG（本地缓存，避免重复下载）
-      {doc_type}_{page}.png
+    pdfs/             ← 下载的 PDF 缓存
 
 用法：
-    python scripts/fetch_fcc.py "石头G30SPro"
-    python scripts/fetch_fcc.py "科沃斯X8Pro" --fcc-id 2A6HE-DEX8PRO
-    python scripts/fetch_fcc.py "石头P20UltraPlus" --force //强制重新采集
-    AIHUBMIX_API_KEY=xxx AIHUBMIX_MODEL=gpt-4o python scripts/fetch_fcc.py "石头S8MaxVUltra"
+    # Step 1：查找 FCC 文档链接
+    python scripts/fetch_fcc.py find "石头G30S Pro"
+    python scripts/fetch_fcc.py find "科沃斯X8 Pro" --fcc-id 2A6HE-DEX8PRO
+
+    # Step 2：OCR 识别（需先 find，也可直接指定 fcc-id 跳过 find）
+    python scripts/fetch_fcc.py ocr "石头G30S Pro"
+    python scripts/fetch_fcc.py ocr "石头G30S Pro" --fcc-id 2AN2O-G30SPRO --force
+    AIHUBMIX_API_KEY=xxx AIHUBMIX_MODEL=gpt-4o python scripts/fetch_fcc.py ocr "石头G30S Pro"
+
+    # 兼容旧用法（等价于 find + ocr）
+    python scripts/fetch_fcc.py "石头G30S Pro"
 """
 from __future__ import annotations
 
@@ -506,54 +511,253 @@ def write_fcc_csv(model: str, fcc_id: str, data: dict) -> Path | None:
     return csv_path
 
 
-# ── CLI ───────────────────────────────────────────────────────────
+# ── fcc_find：查找 FCC ID + 列出文档链接 ─────────────────────────
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="FCC 独立采集模块（fccid.io + 本地图片缓存 + 视觉 OCR）")
-    parser.add_argument("model",     help="机型名称，如 '石头G30S Pro'")
-    parser.add_argument("--fcc-id",  help="直接指定 FCC ID（跳过品牌列表搜索）")
-    parser.add_argument("--force",         action="store_true", help="强制重新采集（保留图片缓存，重跑 OCR）")
-    parser.add_argument("--download-only", action="store_true", help="只下载图片到本地，不运行 OCR")
-    args = parser.parse_args()
-
-    slug    = _slug(args.model)
+def cmd_find(model: str, fcc_id_override: str | None, force: bool) -> None:
+    """
+    Step 1：在 fccid.io 查找匹配的 FCC ID，列出文档链接。
+    结果写入 data/teardowns/fcc/{slug}/links.json，供人工确认后进行 OCR。
+    """
+    slug    = _slug(model)
     out_dir = FCC_DIR / slug
-    latest  = out_dir / "latest.json"
+    links_file = out_dir / "links.json"
 
-    if latest.exists() and not args.force:
-        print(f"✓ 已有缓存：{latest}（使用 --force 强制重新采集）")
+    if links_file.exists() and not force:
+        cached = json.loads(links_file.read_text(encoding="utf-8"))
+        fcc_id = cached.get("fcc_id", "")
+        docs   = cached.get("docs", [])
+        print(f"✓ 已有缓存（使用 --force 强制重新查找）：{links_file}")
+        print(f"  FCC ID:  {fcc_id}")
+        print(f"  fccid.io 页面:  https://fccid.io/{fcc_id}")
+        print(f"  fcc.report 页面: https://fcc.report/FCC-ID/{fcc_id}")
+        print(f"\n  文档列表（{len(docs)} 份）：")
+        for d in docs:
+            print(f"  [{d['doc_id']}] {d['title']}")
+            print(f"      页面: {d['page_url']}")
+            print(f"      PDF:  {d['pdf_url']}")
+        print(f"\n  下一步: python scripts/fetch_fcc.py ocr \"{model}\"")
+        return
+
+    grantee_code, brand = _detect_brand(model)
+    if not grantee_code and not fcc_id_override:
+        print(f"✗ 无法识别品牌 FCC code，请通过 --fcc-id 手动指定", file=sys.stderr)
+        sys.exit(1)
+
+    global_name = _global_name(model, brand) if brand else None
+    search_name = global_name or model
+
+    if fcc_id_override:
+        fcc_id = fcc_id_override
+        print(f"  → 使用指定 FCC ID: {fcc_id}")
+    else:
+        print(f"  → 搜索 fccid.io/{grantee_code} 申请列表…")
+        try:
+            apps = get_grantee_applications(grantee_code)
+        except Exception as e:
+            print(f"✗ 查找失败：{e}", file=sys.stderr)
+            sys.exit(1)
+        if not apps:
+            print(f"✗ 未找到 {grantee_code} 的任何 FCC 申请", file=sys.stderr)
+            sys.exit(1)
+        print(f"  ✓ 找到 {len(apps)} 条申请")
+        fcc_id = match_fcc_id(apps, search_name, model)
+        print(f"  → 匹配 FCC ID: {fcc_id}（搜索词: {search_name}）")
+
+    print(f"  → 解析 {fcc_id} 文档列表…")
+    try:
+        docs = get_fcc_documents(fcc_id)
+    except Exception as e:
+        print(f"✗ 文档列表获取失败：{e}", file=sys.stderr)
+        sys.exit(1)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    links_data = {
+        "fcc_id":       fcc_id,
+        "grantee_code": grantee_code or "",
+        "search_name":  search_name,
+        "model":        model,
+        "found_at":     date.today().isoformat(),
+        "docs":         docs,
+    }
+    links_file.write_text(json.dumps(links_data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    print(f"\n✓ 已保存链接索引：{links_file}")
+    print(f"  FCC ID:          {fcc_id}")
+    print(f"  fccid.io 页面:   https://fccid.io/{fcc_id}")
+    print(f"  fcc.report 页面: https://fcc.report/FCC-ID/{fcc_id}")
+    print(f"\n  文档列表（{len(docs)} 份）：")
+
+    priority = {"internal photos", "parts list", "block diagram"}
+    for d in docs:
+        tag = " ★" if any(kw in d["title"].lower() for kw in priority) else ""
+        print(f"  [{d['doc_id']}] {d['title']}{tag}")
+        print(f"      页面: {d['page_url']}")
+        print(f"      PDF:  {d['pdf_url']}")
+
+    print(f"\n  ★ = 推荐 OCR 目标（Internal Photos / Parts List / Block Diagram）")
+    print(f"  下一步: python scripts/fetch_fcc.py ocr \"{model}\"")
+
+
+# ── fcc_ocr：下载 PDF + 视觉 OCR ─────────────────────────────────
+
+def cmd_ocr(model: str, fcc_id_override: str | None, force: bool) -> None:
+    """
+    Step 2：从 links.json 读取文档列表，下载目标 PDF，运行 OCR，输出 CSV。
+    若 links.json 不存在则先自动执行 find 步骤。
+    """
+    slug    = _slug(model)
+    out_dir = FCC_DIR / slug
+    links_file = out_dir / "links.json"
+    latest     = out_dir / "latest.json"
+
+    if latest.exists() and not force:
         data  = json.loads(latest.read_text(encoding="utf-8"))
         parts = data.get("parts", [])
+        print(f"✓ 已有 OCR 结果（使用 --force 强制重跑）：{latest}")
         print(f"  FCC ID: {data.get('fcc_id')}，识别到 {len(parts)} 个零件")
         for p in parts:
             print(f"  • [{p.get('bom_bucket')}] {p.get('name')} {p.get('model')} ({p.get('manufacturer')})")
-        pdfs = list((out_dir / "pdfs").glob("*.pdf")) if (out_dir / "pdfs").exists() else []
-        print(f"  本地 PDF：{len(pdfs)} 份 → {out_dir / 'pdfs'}")
-        csv_path = write_fcc_csv(args.model, data.get("fcc_id", slug), data)
+        csv_path = write_fcc_csv(model, data.get("fcc_id", slug), data)
         if csv_path:
-            print(f"  上游 CSV：{csv_path}（gen_teardown.py 将作为 Stage 1 上游）")
+            print(f"  上游 CSV：{csv_path}")
         return
 
-    try:
-        data = fetch_fcc(args.model, fcc_id_override=args.fcc_id,
-                         download_only=args.download_only)
-    except Exception as e:
-        print(f"✗ 采集失败：{e}", file=sys.stderr)
-        sys.exit(1)
+    # 若没有 links.json，先自动 find
+    if not links_file.exists():
+        print(f"  ⚠ 未找到链接索引，先执行 find 步骤…")
+        cmd_find(model, fcc_id_override, force=False)
+        if not links_file.exists():
+            sys.exit(1)
 
-    fcc_id = data.get("fcc_id", slug)
-    saved  = save_fcc(args.model, fcc_id, data)
-    parts = data.get("parts", [])
+    links_data = json.loads(links_file.read_text(encoding="utf-8"))
+    fcc_id     = fcc_id_override or links_data.get("fcc_id", slug)
+    all_docs   = links_data.get("docs", [])
+
+    # 筛选目标文档
+    priority = ["Internal Photos", "Parts List", "Block Diagram"]
+    target_docs: list[dict] = []
+    for kw in priority:
+        target_docs.extend(d for d in all_docs if kw.lower() in d["title"].lower())
+    if not target_docs:
+        target_docs = all_docs[:3]
+
+    print(f"  → OCR 目标：{[d['title'] for d in target_docs[:3]]}")
+
+    all_parts: list[dict] = []
+    sources_used: list[str] = []
+    downloaded_pdfs: list[tuple[dict, Path]] = []
+
+    for doc in target_docs[:3]:
+        print(f"\n  ── {doc['title']} ──")
+        try:
+            pdf_path = download_pdf(doc["pdf_url"], out_dir, doc["title"])
+            downloaded_pdfs.append((doc, pdf_path))
+            sources_used.append(doc["title"])
+        except Exception as e:
+            print(f"  ⚠ {doc['title']} 下载失败: {e}")
+
+    for doc, pdf_path in downloaded_pdfs:
+        print(f"\n  → OCR: {doc['title']}…")
+        try:
+            parts = analyze_pdf(pdf_path, model, doc["title"])
+            print(f"  ✓ 识别到 {len(parts)} 个零件")
+            all_parts.extend(parts)
+        except ImportError as e:
+            print(f"  ✗ 缺少依赖: {e}", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            print(f"  ⚠ OCR 失败: {e}")
+
+    seen: set[str] = set()
+    unique_parts: list[dict] = []
+    for p in all_parts:
+        key = f"{p.get('name','')}/{p.get('model','')}"
+        if key not in seen:
+            seen.add(key)
+            unique_parts.append(p)
+
+    grantee_code = links_data.get("grantee_code", "")
+    search_name  = links_data.get("search_name", model)
+    data = {
+        "fcc_id":       fcc_id,
+        "grantee_code": grantee_code,
+        "search_name":  search_name,
+        "sources_used": sources_used,
+        "pdfs_dir":     str(out_dir / "pdfs"),
+        "parts":        unique_parts,
+        "model":        model,
+        "fetched_at":   date.today().isoformat(),
+    }
+    saved = save_fcc(model, fcc_id, data)
     pdfs  = list((out_dir / "pdfs").glob("*.pdf")) if (out_dir / "pdfs").exists() else []
 
     print(f"\n✓ 已保存：{saved}")
     print(f"  本地 PDF：{len(pdfs)} 份 → {out_dir / 'pdfs'}")
-    print(f"  识别零件：{len(parts)} 个")
-    for p in parts:
+    print(f"  识别零件：{len(unique_parts)} 个")
+    for p in unique_parts:
         print(f"  • [{p.get('bom_bucket')}] {p.get('name')} {p.get('model')} ({p.get('manufacturer')})")
-    csv_path = write_fcc_csv(args.model, fcc_id, data)
+    csv_path = write_fcc_csv(model, fcc_id, data)
     if csv_path:
         print(f"  上游 CSV：{csv_path}（gen_teardown.py 将作为 Stage 1 上游）")
+
+
+# ── CLI ───────────────────────────────────────────────────────────
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="FCC 采集工具：find（查链接）/ ocr（OCR识别）",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例：
+  # Step 1：查找 FCC 文档链接（不下载）
+  python scripts/fetch_fcc.py find "石头G30S Pro"
+  python scripts/fetch_fcc.py find "科沃斯X8 Pro" --fcc-id 2A6HE-DEX8PRO
+
+  # Step 2：下载 PDF 并 OCR 识别
+  python scripts/fetch_fcc.py ocr "石头G30S Pro"
+  python scripts/fetch_fcc.py ocr "石头G30S Pro" --force
+
+  # 兼容旧用法（等价于 find + ocr）
+  python scripts/fetch_fcc.py "石头G30S Pro"
+        """,
+    )
+    subparsers = parser.add_subparsers(dest="cmd")
+
+    # --- find ---
+    p_find = subparsers.add_parser("find", help="查找 FCC ID 并列出文档链接（不下载）")
+    p_find.add_argument("model",    help="机型名称，如 '石头G30S Pro'")
+    p_find.add_argument("--fcc-id", help="直接指定 FCC ID（跳过品牌列表搜索）")
+    p_find.add_argument("--force",  action="store_true", help="忽略缓存重新查找")
+
+    # --- ocr ---
+    p_ocr = subparsers.add_parser("ocr", help="下载 PDF 并运行视觉 OCR 识别零件")
+    p_ocr.add_argument("model",    help="机型名称，如 '石头G30S Pro'")
+    p_ocr.add_argument("--fcc-id", help="直接指定 FCC ID（跳过 links.json）")
+    p_ocr.add_argument("--force",  action="store_true", help="忽略缓存重新 OCR")
+
+    # --- 兼容旧用法：直接传 model（无子命令）---
+    parser.add_argument("model_compat", nargs="?", help=argparse.SUPPRESS)
+    parser.add_argument("--fcc-id",       help=argparse.SUPPRESS)
+    parser.add_argument("--force",        action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--download-only",action="store_true", help=argparse.SUPPRESS)
+
+    args = parser.parse_args()
+
+    if args.cmd == "find":
+        cmd_find(args.model, args.fcc_id, args.force)
+    elif args.cmd == "ocr":
+        cmd_ocr(args.model, args.fcc_id, args.force)
+    elif args.model_compat:
+        # 旧用法兼容：先 find 再 ocr
+        model = args.model_compat
+        fcc_id = args.fcc_id
+        if args.download_only:
+            cmd_find(model, fcc_id, args.force)
+        else:
+            cmd_find(model, fcc_id, args.force)
+            cmd_ocr(model, fcc_id, args.force)
+    else:
+        parser.print_help()
 
 
 if __name__ == "__main__":
