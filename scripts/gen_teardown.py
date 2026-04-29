@@ -81,6 +81,7 @@ BUCKET_THEORY = {k: bucket_pct_range(k) for k, _ in BUCKETS}
 CSV_FIELDS = [
     "bom_bucket", "section", "name", "model", "type",
     "spec", "manufacturer", "qty", "source_url", "updated_at", "product_source",
+    "confidence",
     # Stage 4 查价补充字段 (有则写, 没有则空)
     "_unit_price", "_line_cost", "_price_src",
 ]
@@ -742,12 +743,12 @@ def _lookup_unit_price(
     row: dict, lib_index: dict, parts_json: dict,
     already_used_lib_ids: set | None = None,
 ) -> tuple[float, str]:
-    """分级查价 (严格 → 模糊): 规则 hint → lib → standard_parts → AUX/桶兜底。
+    """分级查价 (严格 → 模糊): 型号精确 → 规则 hint → name → standard_parts → AUX/桶兜底。
 
     优先级:
       0. 辅料件 → AUX 分档兜底 (aux_price)
-      1. 规则给的 _lib_hint 在 lib 中精确查 (最高命中)
-      2. model_numbers 精确包含
+      1. model_numbers 精确包含 (lib 已收录具体型号 → 直接命中, 不被 hint 子串拦截)
+      2. 规则给的 _lib_hint 命中 lib name 子串 (lib 无具体型号时按角色分类兜底)
       3. name 完全相等 (去空格/标点)
       4. name 子串匹配
       5. standard_parts.json
@@ -770,7 +771,17 @@ def _lookup_unit_price(
     candidates = lib_index.get(bucket, [])
     used = already_used_lib_ids if already_used_lib_ids is not None else set()
 
-    # Tier 1: 规则 hint → lib name 子串 (最可靠, 规则已精挑 hint)
+    # Tier 1: model_numbers 精确包含 (只匹 model 字段, 避免 spec 描述里提到的型号误中)
+    for lib_row in candidates:
+        for m in (lib_row.get("model_numbers") or "").split("、"):
+            m = m.strip()
+            if m and m in model:
+                p = _mid_cost(lib_row)
+                if p:
+                    used.add(lib_row["id"])
+                    return p, f"lib:{lib_row['id']}(型号)"
+
+    # Tier 2: 规则 hint → lib name 子串 (lib 没收录具体型号时, 用规则挑过的 hint 兜底分类)
     if hint:
         for lib_row in candidates:
             lname = lib_row.get("name", "")
@@ -781,16 +792,6 @@ def _lookup_unit_price(
                 if p:
                     used.add(lib_row["id"])
                     return p, f"lib:{lib_row['id']}(hint)"
-
-    # Tier 2: model_numbers 精确包含
-    for lib_row in candidates:
-        for m in (lib_row.get("model_numbers") or "").split("、"):
-            m = m.strip()
-            if m and m in blob:
-                p = _mid_cost(lib_row)
-                if p:
-                    used.add(lib_row["id"])
-                    return p, f"lib:{lib_row['id']}(型号)"
 
     # Tier 3: name 完全相等 (去空格/标点)
     def _norm(s: str) -> str:
