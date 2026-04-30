@@ -23,14 +23,17 @@
 输出：data/teardowns/{model_slug}_{YYYYMMDD}_teardown.csv
       (含 _unit_price / _line_cost / _price_src, 日期后缀便于版本追溯)
 
-Pipeline：
+Pipeline (4-Stage + 4级成本结构)：
   Stage 0 FCC 上游             读 data/teardowns/fcc/{slug}/*_fcc_*.csv（fetch_fcc.py find+ocr 产出）
                                有则注入 Stage 1 prompt 作为已知项 + Stage 1 后优先合并去重；无则静默跳过
   Stage 1 Discovery            多源调研（FCCID.io / 蓝牙SIG / MyFixGuide / 知乎 / 评测站）,
-                               prompt 注入 framework 7桶清单 + 4级拆机结构 + Stage 0 FCC 已识别零件
+                               prompt 注入 framework 4级结构 + 7桶清单 + Stage 0 FCC 已识别零件
+                               空结果自动降级为 framework_fill（按 typical_items 估算基线 BOM）
   Stage 2 Heuristic Enrichment SoC 识别 → 推导 PMIC/RAM/ROM 伴随件
-  Stage 3 Coverage Audit       对照 framework typical_items 报缺失关键子项
-  Stage 4 Aggregate & Bias     7 桶金额汇总 + ±5% 占比偏差告警 + BOM/MSRP 比
+  ~ Normalize                  桶名归一化：LLM 自创命名映射回 framework 7 个合法 key
+  Stage 3 Coverage Audit       对照 framework typical_items 逐桶审计 + framework_fill 补缺
+  Stage 4 Aggregate & Bias     三级查价 + 辅料组装估算 + 传感器分档 + 7桶占比偏差告警 + BOM/MSRP 比
+                               + 一级成本结构（5大类：BOM实测 + 固定参考成本）, 整机全成本估算
 
 FCC 上游采集（独立脚本，按需先跑）：
     python scripts/fetch_fcc.py find <型号>   # 查 PDF 链接，不下载
