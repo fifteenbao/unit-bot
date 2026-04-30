@@ -225,6 +225,43 @@ _AIHUBMIX_KEY  = _os.environ.get("AIHUBMIX_API_KEY", "")
 _AIHUBMIX_BASE = _os.environ.get("AIHUBMIX_BASE_URL", "https://aihubmix.com/v1")
 _AIHUBMIX_MODEL = _os.environ.get("AIHUBMIX_MODEL", "gpt-5.4-mini")
 
+# LLM web agent 上限控制 (避免 LLM 无限搜索浪费 token + 防止 messages 体积过大触发代理 TCP 断).
+# 用"工具调用总次数"而非"轮数" — 单轮可能并发 2-3 个 tool call, 按轮数会失控.
+# 撞上限不抛错: 注入"停止搜索"指令 + tool_choice="none" 让模型输出最终 JSON.
+_MAX_TOOL_CALLS = 6      # 工具调用总次数上限 (累计, 含 web_fetch + web_search)
+_MAX_AGENT_ROUNDS = 8    # 兜底硬上限 — 即使 LLM 不调工具但反复让脚本走流程也不超过这个
+
+# API 请求重试 (代理不稳/服务端断连时自动重试)
+_API_RETRY_MAX     = 2          # 最多重试 2 次 (共 3 次尝试)
+_API_RETRY_BACKOFF = (5, 15)    # 指数退避 (秒): 第 1 次重试等 5s, 第 2 次等 15s
+
+
+def _api_call_with_retry(call_fn, label: str = "API"):
+    """对 LLM API 调用做重试封装. 处理代理断连 / 临时网络抖动.
+
+    call_fn: 无参 callable, 调用一次 LLM API 返回 response 对象
+    label:   日志前缀 (如 "Anthropic" / "OpenAI")
+    """
+    import time
+    last_err = None
+    for attempt in range(_API_RETRY_MAX + 1):  # 0, 1, 2 = 共 3 次
+        try:
+            return call_fn()
+        except Exception as e:
+            last_err = e
+            err_str = str(e).lower()
+            # 只重试网络/连接类错误, 其他直接抛 (如 401/429/500)
+            is_network = any(k in err_str for k in (
+                "connection", "remoteprotocolerror", "timeout",
+                "disconnected", "ssl", "broken pipe",
+            ))
+            if not is_network or attempt >= _API_RETRY_MAX:
+                raise
+            wait = _API_RETRY_BACKOFF[min(attempt, len(_API_RETRY_BACKOFF) - 1)]
+            print(f"    ⚠ {label} 网络异常 ({type(e).__name__}), {wait}s 后重试 ({attempt+1}/{_API_RETRY_MAX})")
+            time.sleep(wait)
+    raise last_err  # 兜底, 实际走不到
+
 # Anthropic server-side tools（原生 backend 用）
 _ANTHROPIC_SERVER_TOOLS = [
     {"type": "web_search_20260209", "name": "web_search"},
@@ -255,16 +292,34 @@ def _run_web_agent_anthropic(system: str, user: str, max_tokens: int = 8192) -> 
     client = anthropic.Anthropic()
     messages: list[dict] = [{"role": "user", "content": user}]
     round_n = 0
+    tool_call_count = 0  # 累计工具调用次数 (替代轮数, 单轮可能并发多个 tool_call)
 
-    while True:
+    while round_n < _MAX_AGENT_ROUNDS:
         round_n += 1
+        # 触底: 累计 tool call 数 ≥ 上限, 或撞 round 兜底 → 强制 finalize
+        budget_used = tool_call_count >= _MAX_TOOL_CALLS or round_n == _MAX_AGENT_ROUNDS
+        if budget_used:
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"⚠ 已用满 {tool_call_count}/{_MAX_TOOL_CALLS} 次工具调用预算. "
+                    "立即停止搜索, 综合已收集的全部信息, 直接输出最终 JSON 数组. "
+                    "不要再调用任何工具."
+                ),
+            })
+
+        print(f"    → 等待 LLM 响应 (round {round_n}, 已用 {tool_call_count}/{_MAX_TOOL_CALLS} 次工具)…")
         t0 = time.monotonic()
-        resp = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=max_tokens,
-            system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-            tools=_ANTHROPIC_SERVER_TOOLS,
-            messages=messages,
+        resp = _api_call_with_retry(
+            lambda: client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=max_tokens,
+                system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+                tools=_ANTHROPIC_SERVER_TOOLS,
+                messages=messages,
+                **({"tool_choice": {"type": "none"}} if budget_used else {}),
+            ),
+            label="Anthropic",
         )
         elapsed = time.monotonic() - t0
         messages.append({"role": "assistant", "content": resp.content})
@@ -272,15 +327,15 @@ def _run_web_agent_anthropic(system: str, user: str, max_tokens: int = 8192) -> 
         # 打印本轮工具调用
         tool_uses = [b for b in resp.content if getattr(b, "type", "") == "tool_use"]
         if tool_uses:
+            tool_call_count += len(tool_uses)
             for tu in tool_uses:
                 tool_name = getattr(tu, "name", "?")
                 tool_input = getattr(tu, "input", {}) or {}
-                # web_search 显示 query, web_fetch 显示 url
                 hint = tool_input.get("query") or tool_input.get("url") or ""
                 hint = (hint[:80] + "…") if len(hint) > 80 else hint
-                print(f"    ⏱ [round {round_n}] {tool_name}: {hint}  ({elapsed:.1f}s)")
+                print(f"    ⏱ [round {round_n}, tools {tool_call_count}/{_MAX_TOOL_CALLS}] {tool_name}: {hint}  ({elapsed:.1f}s)")
         else:
-            print(f"    ⏱ [round {round_n}] (无工具调用, 直接返回)  ({elapsed:.1f}s)")
+            print(f"    ⏱ [round {round_n}] (直接返回, tools {tool_call_count}/{_MAX_TOOL_CALLS})  ({elapsed:.1f}s)")
 
         if resp.stop_reason in ("end_turn", "pause_turn"):
             texts = [b.text for b in resp.content if getattr(b, "type", "") == "text"]
@@ -290,6 +345,10 @@ def _run_web_agent_anthropic(system: str, user: str, max_tokens: int = 8192) -> 
         if texts:
             return "\n".join(texts)
         raise RuntimeError(f"意外的 stop_reason: {resp.stop_reason}")
+
+    # 撞 _MAX_AGENT_ROUNDS 兜底: 抓最后一条 assistant 文本块
+    last_texts = [b.text for b in resp.content if getattr(b, "type", "") == "text"]
+    return "\n".join(last_texts)
 
 
 def _run_web_agent_openai(system: str, user: str, max_tokens: int = 8192) -> str:
@@ -304,15 +363,32 @@ def _run_web_agent_openai(system: str, user: str, max_tokens: int = 8192) -> str
     ]
     round_n = 0
 
-    while True:
+    tool_call_count = 0  # 累计工具调用次数 (替代轮数, 单轮可能并发多个 tool_call)
+    while round_n < _MAX_AGENT_ROUNDS:
         round_n += 1
+        # 触底: 累计 tool call 数 ≥ 上限, 或撞 round 兜底 → 强制 finalize
+        budget_used = tool_call_count >= _MAX_TOOL_CALLS or round_n == _MAX_AGENT_ROUNDS
+        if budget_used:
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"⚠ 已用满 {tool_call_count}/{_MAX_TOOL_CALLS} 次工具调用预算. "
+                    "立即停止搜索, 综合已收集的全部信息, 直接输出最终 JSON 数组. "
+                    "不要再调用任何工具."
+                ),
+            })
+
+        print(f"    → 等待 LLM 响应 (round {round_n}, 已用 {tool_call_count}/{_MAX_TOOL_CALLS} 次工具)…")
         t0 = time.monotonic()
-        resp = client.chat.completions.create(
-            model=_AIHUBMIX_MODEL,
-            max_completion_tokens=max_tokens,
-            messages=messages,
-            tools=_OPENAI_SERVER_TOOLS,
-            tool_choice="auto",
+        resp = _api_call_with_retry(
+            lambda: client.chat.completions.create(
+                model=_AIHUBMIX_MODEL,
+                max_completion_tokens=max_tokens,
+                messages=messages,
+                tools=_OPENAI_SERVER_TOOLS,
+                tool_choice="none" if budget_used else "auto",
+            ),
+            label="AIHUBMIX",
         )
         elapsed = time.monotonic() - t0
         choice  = resp.choices[0]
@@ -322,10 +398,10 @@ def _run_web_agent_openai(system: str, user: str, max_tokens: int = 8192) -> str
         # 打印本轮工具调用
         tcs = message.tool_calls or []
         if tcs:
+            tool_call_count += len(tcs)
             for tc in tcs:
                 fn_name = tc.function.name if tc.function else "?"
                 args_raw = tc.function.arguments if tc.function else ""
-                # 解析 query/url 参数 (best-effort)
                 hint = ""
                 try:
                     args = json.loads(args_raw) if args_raw else {}
@@ -333,9 +409,9 @@ def _run_web_agent_openai(system: str, user: str, max_tokens: int = 8192) -> str
                 except Exception:
                     hint = args_raw[:60]
                 hint = (hint[:80] + "…") if len(hint) > 80 else hint
-                print(f"    ⏱ [round {round_n}] {fn_name}: {hint}  ({elapsed:.1f}s)")
+                print(f"    ⏱ [round {round_n}, tools {tool_call_count}/{_MAX_TOOL_CALLS}] {fn_name}: {hint}  ({elapsed:.1f}s)")
         else:
-            print(f"    ⏱ [round {round_n}] (无工具调用, 直接返回)  ({elapsed:.1f}s)")
+            print(f"    ⏱ [round {round_n}] (直接返回, tools {tool_call_count}/{_MAX_TOOL_CALLS})  ({elapsed:.1f}s)")
 
         if choice.finish_reason == "stop" or not tcs:
             return message.content or ""
@@ -349,6 +425,9 @@ def _run_web_agent_openai(system: str, user: str, max_tokens: int = 8192) -> str
                 "content":      f"[web_search 已由服务端执行，结果已包含在上下文中]",
             })
         messages.extend(tool_results)
+
+    # 撞 _MAX_AGENT_ROUNDS 兜底: 抓最后一条 assistant 消息内容
+    return message.content or ""
 
 
 def _run_web_agent(system: str, user: str, max_tokens: int = 8192) -> str:
@@ -390,6 +469,12 @@ _DISCOVERY_SYSTEM = (
 
 _DISCOVERY_PROMPT = """\
 请为 **{model}**（建议零售价约 {msrp} 元）从多个数据源生成完整拆机 BOM 清单。
+
+**重要约束 — 严禁脑补海外型号别名**:
+- 只搜索上方"已知规格"段中明确给出的 model 名 (中文/英文都可) 和"信息源链接"
+- **不要**自行联想"该机型海外可能叫 Freo X / RoboMoo Y / X-Plus" 等. 即使你以为有这种映射也禁止假设
+- 国内/海外型号别名只在 model_aliases.csv 中维护, 不在任何 prompt 中存在
+- 如果上方未提供英文名, 仅用 model 中文原名搜索. 找不到资料也比错误关联好
 
 **操作步骤（按顺序执行）— 节省 token 的关键: 优先抓取已提供链接, 不要重复搜索已知规格**
 
@@ -552,7 +637,29 @@ def stage1_discovery(model: str, msrp: float,
     ) + fcc_hint
 
     t0 = time.monotonic()
-    text = _run_web_agent(_DISCOVERY_SYSTEM, prompt, max_tokens=8192)
+    try:
+        text = _run_web_agent(_DISCOVERY_SYSTEM, prompt, max_tokens=8192)
+    except Exception as e:
+        # API 网络错误 (代理断连等) 给出明确出口提示, 不再爆栈
+        elapsed = time.monotonic() - t0
+        err_str = str(e).lower()
+        is_network = any(k in err_str for k in (
+            "connection", "remoteprotocolerror", "timeout",
+            "disconnected", "ssl", "broken pipe",
+        ))
+        if is_network:
+            raise RuntimeError(
+                f"Stage 1 LLM 网络异常 (已重试 {_API_RETRY_MAX} 次仍失败, 总耗时 {elapsed:.0f}s):\n"
+                f"  {type(e).__name__}: {e}\n\n"
+                f"原因可能是:\n"
+                f"  • HTTPS_PROXY 代理在长 LLM 响应上 TCP 断开 (常见)\n"
+                f"  • AIHUBMIX 服务端临时不稳\n\n"
+                f"建议:\n"
+                f"  1. 关代理直连: unset HTTPS_PROXY HTTP_PROXY 后重试\n"
+                f"  2. 换 backend: unset AIHUBMIX_API_KEY 走 ANTHROPIC 原生\n"
+                f"  3. 复用历史 CSV: --csv data/teardowns/<slug>_<date>_teardown.csv 跳过 Stage 1\n"
+            ) from e
+        raise
     elapsed = time.monotonic() - t0
     print(f"  ⏱ Stage 1 LLM 调用完成 ({elapsed:.1f}s)")
     try:
@@ -1351,23 +1458,29 @@ def _save_msrp_to_db(model: str, price_cny: float, source_url: str) -> None:
 
 def run_pipeline(model: str, msrp: float,
                  existing_csv: Optional[Path] = None) -> tuple[list[dict], dict]:
-    """完整执行 Stage 0 + 4-Stage Pipeline，返回 (rows, audit_report)。"""
-    # 规范化产品名（确保 product_source 与 products_db key 一致）
-    canonical = _canonical_product_name(model)
-    if canonical != model:
-        print(f"  → 产品名规范化: {model!r} → {canonical!r}")
-    model = canonical
-    slug = _slug(model)
+    """完整执行 Stage 0 + 4-Stage Pipeline，返回 (rows, audit_report)。
+
+    model:           用户原始输入 (如 '云鲸逍遥003'), 用作 LLM prompt 的 model 字段
+    canonical_key:   products_db key (如 'Narwal_云鲸逍遥003'), 用于内部归档/查找
+    """
+    # 规范化产品名 → 仅用于 product_source 内部归档, 不传给 LLM (避免 LLM 被品牌前缀误导成海外别名)
+    canonical_key = _canonical_product_name(model)
+    if canonical_key != model:
+        print(f"  → 产品归档名: {model!r} (LLM 用) | {canonical_key!r} (CSV product_source 列)")
+    slug = _slug(canonical_key)
 
     # Stage 0: 加载 FCC 上游（fetch_fcc.py find+ocr 产出，有则用，无则静默跳过）
     fcc_rows = load_fcc_rows(slug)
 
-    # Stage 1: Discovery (prompt 从 framework 动态渲染桶清单)
+    # Stage 1: Discovery (LLM 用 model 原名, 不用 canonical_key)
     if existing_csv and existing_csv.exists():
         rows = load_csv(existing_csv)
         print(f"  ✓ 加载现有 CSV: {existing_csv.name}（{len(rows)} 条）")
     else:
         rows = stage1_discovery(model, msrp, fcc_rows=fcc_rows)
+
+    # 后续 product_source 列填 canonical_key (内部归档统一)
+    model = canonical_key
 
     # FCC 优先合并：FCC 行覆盖同 (bucket, name) 的 web 行
     if fcc_rows:
