@@ -106,6 +106,18 @@ def _parse_row(d: dict) -> dict | None:
     except ValueError:
         price = None
 
+    # 信息源链接 (用户手动维护, 用 | 分隔多条; 注入 Stage 1 prompt 让 LLM 优先 web_fetch)
+    info_urls_raw = str(d.get("信息源链接") or "").strip()
+    info_urls = [u.strip() for u in info_urls_raw.split("|") if u.strip().startswith("http")]
+
+    # 合并产品官网 url + 用户提供的信息源, 去重保序
+    web_research: list[str] = []
+    if url:
+        web_research.append(url)
+    for u in info_urls:
+        if u not in web_research:
+            web_research.append(u)
+
     return {
         "key": _slug(brand, name),
         "data": {
@@ -116,7 +128,7 @@ def _parse_row(d: dict) -> dict | None:
             "market_segment":   None,
             "product_page_url": url,
             "data_sources": {
-                "web_research": [url] if url else [],
+                "web_research": web_research,
                 "completeness": {},
             },
             "specs":    specs,
