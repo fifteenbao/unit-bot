@@ -52,6 +52,18 @@ def typical_item_names(key: str) -> list[str]:
     return [it["name"] for it in load_framework()["buckets"][key]["typical_items"]]
 
 
+def typical_items_with_qty(key: str) -> list[tuple[str, int, str]]:
+    """返回某桶 [(name, default_qty, mutex_group), ...]; mutex_group 缺省空字符串.
+
+    mutex_group: 互斥组标记 (如 "mop_form" 表示双转盘/滚筒/履带三类拖布同组).
+                  framework_fill 时, 组内任一已被覆盖则跳过组内其他, 避免补错形态.
+    """
+    return [
+        (it["name"], int(it.get("default_qty", 1)), it.get("mutex_group", ""))
+        for it in load_framework()["buckets"][key]["typical_items"]
+    ]
+
+
 def bucket_pct_tolerance() -> float:
     """占比偏差容忍度(百分点), 从 framework validation_rules 读取。"""
     return float(load_framework()["validation_rules"]["bucket_pct_tolerance"])

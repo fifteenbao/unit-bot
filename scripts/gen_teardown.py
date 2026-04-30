@@ -63,6 +63,7 @@ from core.bucket_framework import (  # noqa: E402
     buckets_ordered,
     expected_bom_msrp_ratio,
     render_prompt_bucket_section,
+    typical_items_with_qty,
 )
 from core.bom_rules import (  # noqa: E402
     BUCKET_DEFAULT_PRICE,
@@ -878,11 +879,15 @@ def _diagnose_bias(
 def stage4_aggregate_audit(
     rows: list[dict], msrp: float,
     coverage: dict | None = None,
+    fill_by_framework: bool = True,
 ) -> dict:
     """对每行查价 → 按桶汇总 → 对照 framework 占比基准做偏差告警 + 诊断建议。
 
     coverage: stage3_coverage_audit 返回的 buckets dict; 传入后告警附带诊断提示
     (缺件 vs 重复计价 vs 定价偏低), 便于定位问题。
+    fill_by_framework: 是否按 framework typical_items 自动补缺 (默认 True)。
+                       缺件按 default_qty × lib 中位价 (lib 没收录则桶兜底价) 补入桶合计,
+                       让 BOM 合计逼近真实整机成本。补件标记 [framework_fill]。
     """
     # 预建 components_lib 索引 (按桶分组)
     lib_index: dict[str, list[dict]] = {}
@@ -928,6 +933,65 @@ def stage4_aggregate_audit(
         bucket_totals[bkt] += r["_line_cost"]
         bucket_counts[bkt] += 1
 
+    # ── framework_fill: 按 typical_items 补缺 ───────────────────────
+    # 对每桶 typical_items 检查覆盖, 缺件按 default_qty × lib 中位价补入合计
+    fill_log: dict[str, list[dict]] = {k: [] for k, _ in BUCKETS}
+    if fill_by_framework:
+        # 用 audit_coverage 的 missing 列表作为缺件源 (与 Stage 3 一致)
+        from core.bucket_framework import audit_coverage as _audit
+        cov_for_fill = _audit(rows)
+        for bkt, _ in BUCKETS:
+            present_names = set(cov_for_fill[bkt].get("present", []))
+            missing_names = set(cov_for_fill[bkt].get("missing", []))
+            if not missing_names:
+                continue
+
+            # mutex_group 处理: 组内任一已 present 则跳过组内其他 missing
+            # (例如双转盘/滚筒/履带三类拖布, 这台机已录履带 → 跳过双转盘和滚筒)
+            items = typical_items_with_qty(bkt)
+            covered_groups: set[str] = set()
+            for name, _, mg in items:
+                if mg and name in present_names:
+                    covered_groups.add(mg)
+
+            for name, default_qty, mutex_group in items:
+                if name not in missing_names:
+                    continue
+                # mutex_group 命中: 跳过 (组内已有别的形态被录)
+                if mutex_group and mutex_group in covered_groups:
+                    fill_log[bkt].append({
+                        "name": name, "qty": 0,
+                        "unit": 0.0, "line": 0.0,
+                        "src": f"skip:mutex({mutex_group})",
+                    })
+                    continue
+
+                # 构造一个虚拟 row 走查价
+                virt_row = {
+                    "bom_bucket": bkt,
+                    "name":       name,
+                    "model":      "",
+                    "spec":       "",
+                    "_lib_hint":  name,  # 直接用 typical_item 名当 hint 找 lib
+                    "_is_aux":    False,
+                    "_agg_note":  "",
+                }
+                unit_price, src = _lookup_unit_price(
+                    virt_row, lib_index, parts_json,
+                    already_used_lib_ids=used_by_bucket[bkt],
+                )
+                line = round(unit_price * default_qty, 2)
+                bucket_totals[bkt] += line
+                bucket_counts[bkt] += 1
+                fill_log[bkt].append({
+                    "name": name, "qty": default_qty,
+                    "unit": round(unit_price, 2), "line": line, "src": src,
+                })
+
+                # 本次 fill 命中后, 标记同组已覆盖 (避免组内 missing 重复补)
+                if mutex_group:
+                    covered_groups.add(mutex_group)
+
     grand = sum(bucket_totals.values())
 
     tolerance = bucket_pct_tolerance()  # 来自 framework validation_rules
@@ -970,6 +1034,31 @@ def stage4_aggregate_audit(
 
     print(f"  {'-'*76}")
     print(f"  {'整机 BOM 合计':16s} {sum(bucket_counts.values()):>4d}  {grand:>10.2f}")
+
+    # framework_fill 明细 (让用户清楚知道哪些是真实录入、哪些是补缺估算)
+    if fill_by_framework:
+        # 区分: 实际补的件 vs 因 mutex_group 跳过的件
+        actual_filled = [(b, it) for b, items in fill_log.items() for it in items
+                         if not it["src"].startswith("skip:")]
+        skipped = [(b, it) for b, items in fill_log.items() for it in items
+                   if it["src"].startswith("skip:")]
+        if actual_filled or skipped:
+            filled_total = sum(it["line"] for _, it in actual_filled)
+            print(f"\n  [framework_fill] 自动补缺 {len(actual_filled)} 件 (¥{filled_total:.2f}, "
+                  f"按 typical_items × default_qty × lib 中位价)")
+            if skipped:
+                print(f"    跳过 {len(skipped)} 件 (mutex_group 互斥): "
+                      + ", ".join(it["name"] for _, it in skipped))
+            for bkt, items in fill_log.items():
+                actual_items = [it for it in items if not it["src"].startswith("skip:")]
+                if not actual_items:
+                    continue
+                bkt_cn = BUCKET_MAP.get(bkt, bkt)
+                bkt_filled_total = sum(it["line"] for it in actual_items)
+                print(f"    {bkt_cn} (+¥{bkt_filled_total:.2f}):")
+                for it in actual_items:
+                    print(f"      • {it['name']:24s} qty={it['qty']:>2d} "
+                          f"× ¥{it['unit']:>5.2f} = ¥{it['line']:>6.2f}  ({it['src']})")
 
     ratio_alert = None
     if msrp and grand:
