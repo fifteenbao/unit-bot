@@ -101,7 +101,12 @@ def render_prompt_bucket_section(include_example_spec: bool = True) -> str:
         )
         lines.append(f"  定义: {b['definition']}")
         if include_example_spec:
+            last_section = None
             for it in b["typical_items"]:
+                section = it.get("section", "")
+                if section and section != last_section:
+                    lines.append(f"    【{section}】")
+                    last_section = section
                 spec = it.get("example_spec", "")
                 lines.append(f"    · {it['name']}" + (f" — {spec}" if spec else ""))
         else:

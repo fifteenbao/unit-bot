@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(awk -F',' 'NR>1 && $1==\"compute_electronics\" {printf \"%-25s | %-22s | unit=%-6s | src=%s\\\\n\", $3, $4, $13, $15}' data/teardowns/云鲸逍遥003_20260429_teardown.csv)",
+      "Bash(awk -F',' 'NR>1 && $1==\"perception\" && $4==\"LSM6DSRTR\" {printf \"%-25s | %-22s | unit=%-6s | src=%s\\\\n\", $3, $4, $13, $15}' data/teardowns/云鲸逍遥003_20260429_teardown.csv)",
+      "Bash(python3 scripts/gen_teardown.py \"云鲸逍遥003\" --msrp 5199 --csv data/teardowns/云鲸逍遥003_20260429_teardown.csv)",
+      "Bash(python3)"
+    ]
+  }
+}

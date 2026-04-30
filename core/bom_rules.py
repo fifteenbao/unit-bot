@@ -14,7 +14,6 @@ BOM 通用规则层 — 供所有 BOM 分析脚本共享的**标准分类规则*
   - is_aggregate(note): 判断是否为聚合件 (整机合计一次)
 
 消费者:
-  - scripts/analyze_c33.py (自家 BOM 细粒度分析, 内部)
   - scripts/gen_teardown.py (LLM 产出的竞品 BOM 二次归桶 + 查价提示)
   - scripts/analyze_*.py (其他机型扩展)
 """
@@ -35,11 +34,8 @@ AUX_PATTERN = re.compile(
     r"(连接线|端子|线束|硅胶套|EVA棉|水管|气管|接头|软管|转接管|排水门|进水门)|"
     r"(过滤网|滤网|过滤支架|刮条|活塞杆|轴套|密封条|密封胶|密封圈|密封塞)"
 )
-AUX_PRICE_MICRO = 0.1   # 贴纸/铭牌/丝印
-AUX_PRICE_TINY  = 0.3   # 螺丝/螺母/O型圈
-AUX_PRICE_SMALL = 0.8   # 硅胶圈/泡棉/小支架
-AUX_PRICE_MID   = 2.0   # 普通注塑小件/连接线/管路
-AUX_PRICE_LARGE = 5.0   # 大件注塑盖板/长风道
+# ====================== DFMA 辅助物料标准化成本 (从 auxiliary_parts 导入) ======================
+from core.auxiliary_parts import AUX_PRICE, DEFAULT_AUX_QTY, AUX_DFMA_IMPACT  # noqa: F401
 
 # ── 关键词 → 桶归类规则 (仅用于分类 + 查价 hint, 不直接定价) ──────────────
 # (regex, bucket, lib_key_hint, note)
@@ -156,27 +152,24 @@ KEYWORD_RULES: list[tuple[str, str, str, str]] = [
      "structure_cmf", "主机上盖", "主机外壳CMF(聚合)"),
     (r"模具摊销|注塑模具",                       "structure_cmf", "模具摊销", "模具摊销"),
     (r"整机紧固件|螺丝.*合计|紧固件汇总",         "structure_cmf", "整机紧固件", "整机紧固件(聚合)"),
-    # MVA/包材
-    (r"包装|外箱|彩箱|中托|上托|下托|保护袋|封口|干燥剂|说明书|SN码|mes码|包装材料|基站包材|主机包材|整机包材",
-     "mva_software", "包装材料", "包材/标签(聚合)"),
-    (r"组装.*人工|组装.*外协|Assembly",           "mva_software", "组装人工", "组装人工"),
-    (r"SLAM.*版税|SLAM.*授权|导航.*版税|导航.*授权",
-     "mva_software", "SLAM版税", "SLAM版税"),
-    (r"OS.*授权|固件.*授权|OS.*license",          "mva_software", "OS授权", "OS授权"),
-    (r"QA.*检测|出厂.*检测",                      "mva_software", "QA", "QA检测"),
-    (r"物流|运保|仓储.*运输",                     "mva_software", "物流", "物流/运保"),
+    # 以下子项已从7桶框架中移除，不再归入任何桶:
+    #   包装材料/外箱/彩箱/说明书/干燥剂 → 一级「仓储物流成本」
+    #   组装人工/QA出厂检测 → 一级「人工+机器折旧」
+    #   SLAM版税/OS授权 → 一级「研发均摊」
+    #   物流/运保 → 一级「仓储物流成本」
 ]
 
-# ── 每桶兜底价(元/件) — 当辅料/规则都未命中时的最后兜底 ────────────
+# ── 每桶兜底价(元/件) — 当组件库和规则均未命中时的最后保底价 ────────────
+# 建议：基于真实拆机 + AUX_PRICE + 行业经验设定
+# 目标：避免严重低估，同时不至于过度保守
 BUCKET_DEFAULT_PRICE = {
-    "compute_electronics": 0.5,
-    "perception":          2.0,
-    "power_motion":        3.0,
-    "cleaning":             2.0,
-    "dock_station":        1.5,
-    "energy":              5.0,
-    "structure_cmf":       0.6,
-    "mva_software":        1.0,
+    "compute_electronics": 1.2,   # 小芯片、电阻、电容、LED驱动等
+    "perception":          3.5,   # 传感器、ToF、IMU、摄像头周边件
+    "power_motion":        4.5,   # 电机、驱动轮相关未命中件
+    "cleaning":            4.0,   # 拖布电机、滚刷、边刷、水泵、刮条等
+    "dock_station":        3.5,   # 基站风机、水路接头、刮条、集尘相关
+    "energy":              6.0,   # 电池周边、BMS 配件、充电触点等
+    "structure_cmf":       3.8,   # 注塑件、支架、外壳、密封件等（最容易漏的桶）
 }
 
 
@@ -188,14 +181,14 @@ def _parse_size_mm(spec: str) -> float:
 
 
 def aux_price(name: str, spec: str = "") -> float:
-    """对辅料按文字/尺寸分档给价。"""
+    """对辅料按文字/尺寸分档给价，返回 (价格, 档位key)。"""
     blob = name + (spec or "")
     if re.search(r"^(贴纸|标贴|铭牌|指引贴|提示贴|SN码|mes码|丝印|膜片|保护膜)", name):
-        return AUX_PRICE_MICRO
+        return AUX_PRICE["micro"]
     if re.search(r"螺丝|螺母|介子|O型圈|挡圈|卡簧|锁扣", blob):
-        return AUX_PRICE_TINY
+        return AUX_PRICE["tiny"]
     if re.search(r"硅胶|硅橡胶|橡胶|密封圈|密封条|胶套|胶塞|EVA|泡棉|海绵|消音棉|刮条", blob):
-        return AUX_PRICE_SMALL
+        return AUX_PRICE["small"]
     size_mm = _parse_size_mm(spec)
     is_hard_large = (
         size_mm >= 200 or
@@ -206,13 +199,13 @@ def aux_price(name: str, spec: str = "") -> float:
         )
     )
     if is_hard_large and not re.search(r"硅胶|橡胶|泡棉|海绵|EVA|消音棉", blob):
-        return AUX_PRICE_LARGE
+        return AUX_PRICE["large"]
     if re.search(r"(支架|盖板|装饰|固定盖|定位支架|下壳|上壳|面盖|"
                  r"风道|流道|转接|接头|连接线|线束|水管|气管|软管|端子)", name):
-        return AUX_PRICE_MID
+        return AUX_PRICE["mid"]
     if re.search(r"弹簧|转轴|导柱|活塞杆|轴套|喇叭套|减震|脚垫|磁铁|磁环", blob):
-        return AUX_PRICE_SMALL
-    return AUX_PRICE_MID
+        return AUX_PRICE["small"]
+    return AUX_PRICE["mid"]
 
 
 def classify(name: str, spec: str = "", region: str = "robot") -> tuple[str | None, str, str]:
@@ -223,7 +216,7 @@ def classify(name: str, spec: str = "", region: str = "robot") -> tuple[str | No
     """
     blob = f"{name}||{spec or ''}"
     if region == "package":
-        return "mva_software", "包装材料", "包材/标签(聚合)"
+        return None, "", ""  # 包材已移出7桶框架，归入一级「仓储物流成本」
     for pat, bucket, hint, note in KEYWORD_RULES:
         if re.search(pat, blob):
             # 基站区域内的动力/清洁规则 → 归基站

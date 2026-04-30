@@ -1,14 +1,62 @@
 {
   "version": "1.0",
-  "title": "扫地机器人 BOM 8 桶成本分析标准框架",
-  "description": "扫地机器人 BOM 成本分析的通用桶划分模板。每桶给出定义、典型子项、行业占比基准与归桶边界规则。用于横向对比不同机型 (自研/竞品) 的成本结构。单价字段留空, 由使用者按自有供应链数据填入。",
+  "title": "扫地机器人 BOM 7 桶成本分析标准框架",
+  "description": "扫地机器人 BOM 硬件物料成本的7桶划分模板。每桶给出定义、典型子项、行业占比基准与归桶边界规则。7桶全部归入一级成本大类「硬件物料」,其余一级大类(人工+机器折旧/销售+管理费用/研发均摊/仓储物流成本)不在本框架内,由独立成本模型核算。",
   "usage": [
     "1. 拿到目标机型 BOM (或拆解 + OCR 识别)",
     "2. 每件按 typical_items 清单与 boundary_notes 边界归桶",
     "3. 聚合件 (组件/模组) 整体计价一次, 下级子件不重复累加",
-    "4. 汇总 8 桶金额, 对照 industry_pct_range 验证占比合理性",
+    "4. 汇总 7 桶金额, 对照 industry_pct_range 验证占比合理性",
     "5. 偏差 >5% 的桶标记为重点关注项, 用于降本机会定位"
   ],
+  "teardown_hierarchy": {
+    "description": "整机成本的4级分解结构。一级为5大成本类别(7桶框架只覆盖硬件物料),二级为7桶,三级为每桶下的功能模块,四级为最小可计价组件。",
+    "levels": [
+      {"level": 1, "name": "一级·成本大类", "categories": ["硬件物料", "人工+机器折旧", "销售+管理费用", "研发均摊", "仓储物流成本"], "description": "整机全成本顶层分类,7桶全部属于硬件物料"},
+      {"level": 2, "name": "二级·7桶", "description": "BOM硬件成本分析核心框架"},
+      {"level": 3, "name": "三级·功能模块", "description": "每桶下的功能子系统,按物理拆机组织"},
+      {"level": 4, "name": "四级·组件", "description": "最小可计价单元,对应BOM单行"}
+    ],
+    "level1_categories": {
+      "硬件物料": {
+        "description": "物理拆机可见的全部硬件零件成本,7桶框架完整覆盖",
+        "buckets": ["compute_electronics", "perception", "power_motion", "cleaning", "dock_station", "energy", "structure_cmf"],
+        "pct_of_total": "约 75-85%"
+      },
+      "人工+机器折旧": {
+        "description": "组装产线人工、SMT贴片机时、注塑机台折旧、检测设备摊销。不在7桶框架内。",
+        "note": "覆盖: 组装人工+外协、QA出厂检测 (原第8桶子项)"
+      },
+      "销售+管理费用": {
+        "description": "渠道分销、品牌营销、售后返修备件、行政人力分摊。不在7桶框架内。",
+        "note": "不直接计入BOM,在整机毛利模型中核算"
+      },
+      "研发均摊": {
+        "description": "SLAM算法/OS授权、模具NRE一次性费用按生命周期台数分摊。不在7桶框架内。",
+        "note": "覆盖: SLAM/导航算法版税、OS/固件授权 (原第8桶子项)"
+      },
+      "仓储物流成本": {
+        "description": "包材、整机成品仓租金、干线/支线运输、运输保险。不在7桶框架内。",
+        "note": "覆盖: 包装材料、物流/运保 (原第8桶子项)"
+      }
+    },
+    "level3_systems": {
+      "description": "物理拆机的三级系统视图。主机端6系统+基站端3系统,共9个物理系统全部映射到7个硬件物料桶。",
+      "主机端": [
+        {"system": "导航系统",   "bucket": "perception",           "note": "LDS+前视ToF+线激光+沿墙+超声波+IMU+地检+碰撞+霍尔+麦克风"},
+        {"system": "清洁系统",   "bucket": "cleaning",              "note": "恒压活水洗地+高密度滚刷+活水循环+边刷+尘盒+水箱水泵+拖布支架"},
+        {"system": "驱动系统",   "bucket": "power_motion",          "note": "吸尘风机+驱动轮+边轮+万向轮+越障升降"},
+        {"system": "主板系统",   "bucket": "compute_electronics",   "note": "SoC+RAM+ROM+WiFi/BT+PMIC+PCB+阻容+MCU+功放"},
+        {"system": "电池系统",   "bucket": "energy",                "note": "锂电池包(电芯+BMS+封装+连接线)"},
+        {"system": "结构系统",   "bucket": "structure_cmf",         "note": "上盖+中框+底盘+保险杠+LDS装饰+尘盒舱盖+模具摊销+CMF+紧固件"}
+      ],
+      "基站端": [
+        {"system": "外壳系统",   "bucket": "dock_station",          "note": "上盖+中框+底座+后壳+隔板"},
+        {"system": "水路系统",   "bucket": "dock_station",          "note": "清水桶+污水桶+清洗盘+水泵+电磁阀+PTC烘干+顶杆升降+水路杂件"},
+        {"system": "电气系统",   "bucket": "dock_station",          "note": "电源板+集尘风机+充电弹片+子PCBA+传感开关+AC电源线+集尘管路"}
+      ]
+    }
+  },
   "buckets": {
     "compute_electronics": {
       "name_cn": "算力与电子",
@@ -37,62 +85,74 @@
         {
           "name": "主控 SoC",
           "example_spec": "ARM Cortex-A7/A53 单/双核, 带 NPU 可选",
-          "default_qty": 1
-        },
-        {
-          "name": "主板 PCB",
-          "example_spec": "4 层 FR4, 130×55mm 级别, 沉金工艺",
-          "default_qty": 1
-        },
-        {
-          "name": "阻容器件汇总",
-          "example_spec": "全板阻容+磁珠+电感+晶振",
-          "default_qty": 1
-        },
-        {
-          "name": "板上小 IC 汇总",
-          "example_spec": "插座+按键+LED+三极管+二极管+MOS",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "核心算力"
         },
         {
           "name": "ROM / eMMC",
           "example_spec": "8-16 GB eMMC",
-          "default_qty": 1
-        },
-        {
-          "name": "电机驱动 IC",
-          "example_spec": "H 桥驱动, 多颗",
-          "default_qty": 4
-        },
-        {
-          "name": "Wi-Fi / BT 模组",
-          "example_spec": "2.4G 单频或 2.4G+5G 双频",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "核心算力"
         },
         {
           "name": "LPDDR RAM",
           "example_spec": "512MB - 2GB",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "核心算力"
         },
         {
-          "name": "MCU 子板",
-          "example_spec": "32 位 MCU 控制板",
-          "default_qty": 1
+          "name": "主板 PCB",
+          "example_spec": "4 层 FR4, 130×55mm 级别, 沉金工艺",
+          "default_qty": 1,
+          "section": "主板与互联"
+        },
+        {
+          "name": "Wi-Fi / BT 模组",
+          "example_spec": "2.4G 单频或 2.4G+5G 双频",
+          "default_qty": 1,
+          "section": "主板与互联"
         },
         {
           "name": "小 PCB",
           "example_spec": "回充/USB/开关/霍尔 2 层 FR4 小板",
-          "default_qty": 2
+          "default_qty": 2,
+          "section": "主板与互联"
         },
         {
           "name": "LDO / PMIC",
           "example_spec": "多路电源管理 IC",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "电源与驱动"
+        },
+        {
+          "name": "电机驱动 IC",
+          "example_spec": "H 桥驱动, 多颗",
+          "default_qty": 4,
+          "section": "电源与驱动"
+        },
+        {
+          "name": "MCU 子板",
+          "example_spec": "32 位 MCU 控制板",
+          "default_qty": 1,
+          "section": "辅助器件"
+        },
+        {
+          "name": "阻容器件汇总",
+          "example_spec": "全板阻容+磁珠+电感+晶振",
+          "default_qty": 1,
+          "section": "辅助器件"
+        },
+        {
+          "name": "板上小 IC 汇总",
+          "example_spec": "插座+按键+LED+三极管+二极管+MOS",
+          "default_qty": 1,
+          "section": "辅助器件"
         },
         {
           "name": "喇叭 / 功放 IC",
           "example_spec": "语音提示音频",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "辅助器件"
         }
       ],
       "boundary_notes": [
@@ -128,52 +188,62 @@
         {
           "name": "激光雷达 (LDS)",
           "example_spec": "2D 三角测距 或 单线 ToF 360°",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "核心导航"
         },
         {
           "name": "前视 ToF / dToF 模块",
           "example_spec": "单点/线阵/面阵 ToF",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "核心导航"
         },
         {
           "name": "前视线激光 + RGB",
           "example_spec": "单/双线激光+RGB 模组避障",
-          "default_qty": 1
-        },
-        {
-          "name": "IMU 6 轴",
-          "example_spec": "加速度计+陀螺仪",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "前视避障"
         },
         {
           "name": "沿墙线激光",
           "example_spec": "单线沿墙传感",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "沿边感知"
         },
         {
           "name": "超声波模块",
           "example_spec": "地毯识别/沿墙",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "沿边感知"
+        },
+        {
+          "name": "IMU 6 轴",
+          "example_spec": "加速度计+陀螺仪",
+          "default_qty": 1,
+          "section": "位姿与安全"
         },
         {
           "name": "地检/下视组件",
           "example_spec": "红外反射 × 2-4",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "位姿与安全"
         },
         {
           "name": "碰撞传感组件",
           "example_spec": "碰撞 PCB+弹簧+开关",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "位姿与安全"
         },
         {
           "name": "霍尔开关 IC",
           "example_spec": "多颗, SOT-23 封装",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "位姿与安全"
         },
         {
           "name": "麦克风阵列",
           "example_spec": "语音交互 (进阶项)",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "语音交互"
         }
       ],
       "boundary_notes": [
@@ -210,27 +280,32 @@
         {
           "name": "主机吸尘风机",
           "example_spec": "14.4V 有刷/无刷, 吸力 10000-30000Pa",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "吸尘动力"
         },
         {
           "name": "驱动轮 / 履带组件",
           "example_spec": "有刷电机+减速箱+编码器 ×2",
-          "default_qty": 2
+          "default_qty": 2,
+          "section": "行走驱动"
         },
         {
           "name": "边轮组件",
           "example_spec": "边缘辅助轮+减速+支架 ×2",
-          "default_qty": 2
+          "default_qty": 2,
+          "section": "行走驱动"
         },
         {
           "name": "万向轮组件",
           "example_spec": "前置万向从动轮+包胶+支架",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "行走驱动"
         },
         {
           "name": "越障升降机构",
           "example_spec": "底盘升降齿条+导轨 (进阶项)",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "越障机构"
         }
       ],
       "boundary_notes": [
@@ -267,62 +342,70 @@
           "name": "双转盘拖布",
           "example_spec": "圆盘×2, 涤纶/超纤, 直径约 80-90mm",
           "default_qty": 2,
-          "_note": "双转盘拖布: 价格暂占位待补",
-          "mutex_group": "mop_form"
+          "mutex_group": "mop_form",
+          "section": "恒压活水洗地"
         },
         {
           "name": "滚筒拖布",
           "example_spec": "短滚筒, 整机 1 根",
           "default_qty": 1,
-          "_note": "滚筒拖布: 价格暂占位待补",
-          "mutex_group": "mop_form"
+          "mutex_group": "mop_form",
+          "section": "恒压活水洗地"
         },
         {
           "name": "履带拖布",
           "example_spec": "宽幅履带式整环, 整机 1 件",
           "default_qty": 1,
-          "_note": "履带拖布: 价格最高 (云鲸专利)",
-          "mutex_group": "mop_form"
-        },
-        {
-          "name": "滚刷组件 (浮动中扫)",
-          "example_spec": "滚刷本体+电机+盖板+浮动机构",
-          "default_qty": 1
-        },
-        {
-          "name": "主机污水盒组件",
-          "example_spec": "含吸气支架+污水槽+密封",
-          "default_qty": 1
-        },
-        {
-          "name": "主机清水盒组件",
-          "example_spec": "含进水阀+软管+水位检测",
-          "default_qty": 1
-        },
-        {
-          "name": "主机尘盒组件",
-          "example_spec": "含滤网+按钮+密封",
-          "default_qty": 1
-        },
-        {
-          "name": "边扫组件",
-          "example_spec": "边刷+齿轮箱+电机",
-          "default_qty": 2
-        },
-        {
-          "name": "注清水泵 / 清水泵",
-          "example_spec": "5V 小流量",
-          "default_qty": 1
+          "mutex_group": "mop_form",
+          "section": "恒压活水洗地"
         },
         {
           "name": "拖布支架 / 机械臂",
           "example_spec": "抬升+伸缩+安装检测 (进阶项)",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "恒压活水洗地"
+        },
+        {
+          "name": "滚刷组件 (浮动中扫)",
+          "example_spec": "滚刷本体+电机+盖板+浮动机构",
+          "default_qty": 1,
+          "section": "高密度滚刷"
+        },
+        {
+          "name": "边扫组件",
+          "example_spec": "边刷+齿轮箱+电机",
+          "default_qty": 2,
+          "section": "高密度滚刷"
+        },
+        {
+          "name": "主机清水盒组件",
+          "example_spec": "含进水阀+软管+水位检测",
+          "default_qty": 1,
+          "section": "活水循环"
+        },
+        {
+          "name": "主机污水盒组件",
+          "example_spec": "含吸气支架+污水槽+密封",
+          "default_qty": 1,
+          "section": "活水循环"
+        },
+        {
+          "name": "注清水泵 / 清水泵",
+          "example_spec": "5V 小流量",
+          "default_qty": 1,
+          "section": "活水循环"
         },
         {
           "name": "电磁阀 (主机)",
           "example_spec": "小流量阀体",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "活水循环"
+        },
+        {
+          "name": "主机尘盒组件",
+          "example_spec": "含滤网+按钮+密封",
+          "default_qty": 1,
+          "section": "精密机械结构"
         }
       ],
       "boundary_notes": [
@@ -357,92 +440,109 @@
       ],
       "typical_items": [
         {
-          "name": "基站外壳 (五大件)",
-          "example_spec": "上/中/后/底/隔板 ABS 注塑",
-          "default_qty": 1
-        },
-        {
-          "name": "基站电源板",
-          "example_spec": "220V→24V + 650W 集尘 + 110W PTC 驱动",
-          "default_qty": 1
-        },
-        {
-          "name": "基站集尘风机",
-          "example_spec": "650W 有刷, 真空度 ≥15kPa",
-          "default_qty": 1
+          "name": "基站外壳组件",
+          "example_spec": "上盖+中框+底座+后壳+隔板 ABS 注塑",
+          "default_qty": 1,
+          "section": "外壳系统"
         },
         {
           "name": "基站清水桶组件",
           "example_spec": "含过滤网+活塞+密封",
-          "default_qty": 1
-        },
-        {
-          "name": "PTC 加热 + 烘干风扇",
-          "example_spec": "100-150W PTC + 小功率离心风扇",
-          "default_qty": 1
-        },
-        {
-          "name": "污水气泵组件",
-          "example_spec": "12V 小型气泵, ≥5L/min",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "水路系统"
         },
         {
           "name": "基站污水桶组件",
           "example_spec": "含水位检测+浮球",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "水路系统"
         },
         {
-          "name": "清洗盘组件",
+          "name": "清洗盘 + 刮条",
           "example_spec": "拖布清洗盘+刮条+水路",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "水路系统"
         },
         {
-          "name": "基站子 PCBA",
-          "example_spec": "顶杆开关+霍尔+回充 PCB",
-          "default_qty": 1
-        },
-        {
-          "name": "充电弹片 + 回充组件",
-          "example_spec": "充电弹片+磁环+红外 PCBA",
-          "default_qty": 1
-        },
-        {
-          "name": "集尘管路 + 集尘袋",
-          "example_spec": "管路+转接+EVA+2-3L 袋",
-          "default_qty": 1
-        },
-        {
-          "name": "顶杆升降机构 + 电机",
-          "example_spec": "减速电机+齿条+检测",
-          "default_qty": 1
+          "name": "基站水泵组件",
+          "example_spec": "进水泵+排水泵+污水气泵 汇总",
+          "default_qty": 1,
+          "section": "水路系统"
         },
         {
           "name": "电磁阀 (基站)",
           "example_spec": "12V 水路阀 (多路)",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "水路系统"
         },
         {
-          "name": "AC 电源线",
-          "example_spec": "欧规/美规/国标 220V/110V",
-          "default_qty": 1
+          "name": "PTC 加热 + 烘干风扇",
+          "example_spec": "100-150W PTC + 小功率离心风扇",
+          "default_qty": 1,
+          "section": "水路系统"
+        },
+        {
+          "name": "顶杆升降机构 + 电机",
+          "example_spec": "减速电机+齿条+检测",
+          "default_qty": 1,
+          "section": "水路系统"
         },
         {
           "name": "基站水路杂件",
           "example_spec": "水桶轴+防折管+门+按键",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "水路系统"
+        },
+        {
+          "name": "基站电源板",
+          "example_spec": "220V→24V + 650W 集尘 + 110W PTC 驱动",
+          "default_qty": 1,
+          "section": "电气系统"
+        },
+        {
+          "name": "基站集尘风机",
+          "example_spec": "650W 有刷, 真空度 ≥15kPa",
+          "default_qty": 1,
+          "section": "电气系统"
+        },
+        {
+          "name": "集尘管路 + 集尘袋",
+          "example_spec": "管路+转接+EVA+2-3L 袋",
+          "default_qty": 1,
+          "section": "电气系统"
+        },
+        {
+          "name": "充电弹片 + 回充组件",
+          "example_spec": "充电弹片+磁环+红外 PCBA",
+          "default_qty": 1,
+          "section": "电气系统"
+        },
+        {
+          "name": "基站子 PCBA",
+          "example_spec": "按键+显示+传感器 PCB",
+          "default_qty": 1,
+          "section": "电气系统"
         },
         {
           "name": "基站传感开关",
           "example_spec": "轻触+浮球+霍尔+按键",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "电气系统"
+        },
+        {
+          "name": "AC 电源线",
+          "example_spec": "欧规/美规/国标 220V/110V",
+          "default_qty": 1,
+          "section": "电气系统"
         }
       ],
       "boundary_notes": [
+        "三级系统拆解: 外壳系统(承载) / 水路系统(换水+清洗+烘干) / 电气系统(供电+集尘+控制)",
         "纯充电桩: 仅保留外壳+充电弹片+AC 线",
-        "+ 自动换水: 加清水桶+污水桶+气泵+电磁阀",
-        "+ 热风烘干: 加 PTC + 烘干风扇",
-        "+ 自动集尘: 加集尘风机 + 管路 + 集尘袋",
-        "+ 自清洗拖布: 加清洗盘 + 顶杆升降机构"
+        "+ 自动换水: 加水路系统 (清水桶+污水桶+水泵+电磁阀)",
+        "+ 热风烘干: 加水路系统 PTC + 烘干风扇",
+        "+ 自动集尘: 加电气系统 (集尘风机 + 管路 + 集尘袋)",
+        "+ 自清洗拖布: 加水路系统 (清洗盘 + 顶杆升降机构)"
       ]
     },
     "energy": {
@@ -471,7 +571,8 @@
         {
           "name": "锂电池包",
           "example_spec": "18650 4S1P/4S2P, 14.4V, 3000-6400mAh, 含 BMS",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "电池包"
         }
       ],
       "boundary_notes": [
@@ -508,109 +609,56 @@
         {
           "name": "主机上盖 / 面壳",
           "example_spec": "ABS+盖板+装饰, CMF 涂装",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "主机壳体"
         },
         {
           "name": "主机底盘 (底壳)",
           "example_spec": "ABS 主承力结构",
-          "default_qty": 1
-        },
-        {
-          "name": "模具摊销",
-          "example_spec": "整机+基站按年量摊销",
-          "default_qty": 1
-        },
-        {
-          "name": "喷涂 / CMF 表面处理",
-          "example_spec": "素色/金属漆/CD 纹/丝印",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "主机壳体"
         },
         {
           "name": "保险杠 + 胶条",
           "example_spec": "ABS+TPU 双色注塑",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "防护与装饰"
         },
         {
           "name": "LDS 装饰件",
           "example_spec": "铝合金 CD 纹装饰+硅胶套+盖",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "防护与装饰"
+        },
+        {
+          "name": "模具摊销",
+          "example_spec": "整机+基站按年量摊销",
+          "default_qty": 1,
+          "section": "工艺与辅料"
+        },
+        {
+          "name": "喷涂 / CMF 表面处理",
+          "example_spec": "素色/金属漆/CD 纹/丝印",
+          "default_qty": 1,
+          "section": "工艺与辅料"
         },
         {
           "name": "整机紧固件",
           "example_spec": "螺丝+垫片+磁铁+弹簧 汇总",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "工艺与辅料"
         },
         {
           "name": "小五金散件",
           "example_spec": "脚垫+贴纸+标签",
-          "default_qty": 1
+          "default_qty": 1,
+          "section": "工艺与辅料"
         }
       ],
       "boundary_notes": [
         "模具摊销按年量摊销: 年量越大摊销越低",
         "CMF 档次: 素材无涂装 < 单色漆 < 多色+金属漆",
         "外壳 CMF 表面处理不应重复计入注塑件中, 统一归此处"
-      ]
-    },
-    "mva_software": {
-      "name_cn": "MVA+软件授权",
-      "name_en": "MVA + SW License",
-      "order": 8,
-      "definition": "制造附加值 (Manufacturing Value-Add): 组装人工+外协、SLAM/导航版税、OS/固件授权、QA 出厂检测、物流运保、包装材料。非物料硬件成本。",
-      "industry_pct_range": [
-        10,
-        16
-      ],
-      "industry_pct_avg": 13,
-      "user_value_weight": {
-        "note": "低感知——用户不感知组装工时和物流成本，但 SLAM 算法质量直接影响路径规划体验",
-        "entry": 0.3,
-        "mid": 0.45,
-        "flagship": 0.6
-      },
-      "dfma_levers": [
-        "SLAM 算法从外购授权改为自研/开源方案（节省版税，需研发投入）",
-        "DFA 优化：减少紧固件数量，改卡扣设计，降低人工装配工时",
-        "QA 出厂检测自动化（AOI + 功能自检，减少人工检测比例）",
-        "包材简化（取消内衬泡沫改为纸浆托，减少包材料号）",
-        "ODM 外协评估：整线外协 vs 品牌自建，规模 <50 万台时外协通常更低"
-      ],
-      "typical_items": [
-        {
-          "name": "组装人工 + 外协",
-          "example_spec": "整线+调测+来料检测+返修+耗材",
-          "default_qty": 1
-        },
-        {
-          "name": "包装材料",
-          "example_spec": "主机+基站双层瓦楞+纸托+说明书+干燥剂",
-          "default_qty": 1
-        },
-        {
-          "name": "SLAM / 导航算法版税",
-          "example_spec": "LiDAR SLAM+多层地图授权",
-          "default_qty": 1
-        },
-        {
-          "name": "物流 / 运保",
-          "example_spec": "整机-工厂物流+仓储+运输保险",
-          "default_qty": 1
-        },
-        {
-          "name": "QA 出厂检测",
-          "example_spec": "单台检测+老化 约 20min",
-          "default_qty": 1
-        },
-        {
-          "name": "OS / 固件授权",
-          "example_spec": "嵌入式 Linux / RTOS + BSP",
-          "default_qty": 1
-        }
-      ],
-      "boundary_notes": [
-        "小企业组装含外采/客采/返修, 比大厂摊销后单纯工时高 50-100%",
-        "SLAM 自研/开源 vs 纯外购授权, 价差可达 5 倍以上",
-        "嵌入式 Linux 免费, BSP 摊销后成本极低; 特殊授权 OS 另计"
       ]
     }
   },
@@ -620,6 +668,6 @@
       25,
       40
     ],
-    "description": "每桶实际占比与 industry_pct_avg 偏差 > bucket_pct_tolerance 需标记为重点关注项。BOM/MSRP 比例低于区间下限或高于上限时需核查 BOM 完整性 (常见范围 25-40%, 旗舰机偏上限)。"
+    "description": "每桶实际占比与 industry_pct_avg 偏差 > bucket_pct_tolerance 需标记为重点关注项。7桶总计为硬件物料BOM成本,BOM/MSRP比例低于区间下限或高于上限时需核查BOM完整性。其余4个一级大类(人工+机器折旧/销售+管理费用/研发均摊/仓储物流成本)不纳入BOM/MSRP计算。"
   }
 }
