@@ -49,13 +49,12 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-import anthropic
-
-ROOT         = Path(__file__).parent.parent
+ROOT          = Path(__file__).parent.parent
 DATA_DIR      = ROOT / "data"
 TEARDOWN_DIR  = DATA_DIR / "teardowns"
 PARTS_FILE    = DATA_DIR / "lib" / "standard_parts.json"
 COMP_LIB_FILE = DATA_DIR / "lib" / "components_lib.csv"
+ALIASES_FILE  = DATA_DIR / "products" / "model_aliases.csv"
 
 sys.path.insert(0, str(ROOT))
 from core.bucket_framework import (  # noqa: E402
@@ -299,7 +298,15 @@ _OPENAI_SERVER_TOOLS = [
 
 def _run_web_agent_anthropic(system: str, user: str, max_tokens: int = 8192) -> str:
     import time
-    client = anthropic.Anthropic()
+    try:
+        import anthropic as _anthropic
+    except ImportError:
+        raise RuntimeError(
+            "未安装 anthropic SDK。请运行:\n"
+            "  pip install anthropic\n"
+            "或设置 AIHUBMIX_API_KEY 或 DEEPSEEK_API_KEY 使用其他后端。"
+        ) from None
+    client = _anthropic.Anthropic()
     messages: list[dict] = [{"role": "user", "content": user}]
     round_n = 0
     tool_call_count = 0  # 累计工具调用次数 (替代轮数, 单轮可能并发多个 tool_call)
@@ -498,7 +505,15 @@ def _run_web_agent(system: str, user: str, max_tokens: int = 8192) -> str:
         return _run_web_agent_openai(system, user, max_tokens)
     if _DEEPSEEK_KEY:
         return _run_web_agent_deepseek(system, user, max_tokens)
-    return _run_web_agent_anthropic(system, user, max_tokens)
+    if _os.environ.get("ANTHROPIC_API_KEY"):
+        return _run_web_agent_anthropic(system, user, max_tokens)
+    raise RuntimeError(
+        "未配置 LLM API Key，无法进行 web 调研。请设置以下任一环境变量:\n"
+        "  export ANTHROPIC_API_KEY=sk-ant-...\n"
+        "  export AIHUBMIX_API_KEY=sk-...\n"
+        "  export DEEPSEEK_API_KEY=sk-...\n"
+        "或使用 --csv 指定已有拆机 CSV 跳过 Stage 1 调研。"
+    )
 
 
 def _extract_json_array(text: str) -> list[dict]:
@@ -636,12 +651,23 @@ def _render_product_context(model: str) -> str:
     目的: 减少 LLM 重复查询已有数据 + 强制优先 web_fetch 用户提供的权威源.
     """
     db = _load_products_db()
-    slug = _slug(model).lower()
+    candidates = _resolve_candidate_names(model)
     entry = None
-    for key, val in db.items():
-        if _slug(key).lower() == slug or slug in _slug(key).lower():
-            entry = val
+    for candidate in candidates:
+        slug = _slug(candidate).lower()
+        for key, val in db.items():
+            if _slug(key).lower() == slug or slug in _slug(key).lower():
+                entry = val
+                break
+        if entry:
             break
+    if not entry:
+        # fallback: 原始模糊匹配
+        slug = _slug(model).lower()
+        for key, val in db.items():
+            if _slug(key).lower() == slug or slug in _slug(key).lower():
+                entry = val
+                break
     if not entry:
         return ""
 
@@ -1453,33 +1479,94 @@ def _load_products_db() -> dict:
         return {}
 
 
+def _load_model_aliases() -> list[dict]:
+    """加载 model_aliases.csv，返回 [{brand, cn_model, global_model}, ...]."""
+    if not ALIASES_FILE.exists():
+        return []
+    rows = []
+    with open(ALIASES_FILE, encoding="utf-8") as f:
+        for r in csv.DictReader(f):
+            rows.append(r)
+    return rows
+
+
+def _resolve_candidate_names(model: str) -> list[str]:
+    """根据 model_aliases.csv 解析候选名称列表（原始名 + 别名）。
+
+    例如用户输入 '石头 G30S Pro'：
+      1. 在 model_aliases.csv 中找到 cn_model='G30' / global_model='Saros 10'
+      2. 如果 model 包含 'G30'，返回 ['石头 G30S Pro', 'Saros 10', '石头 Saros 10']
+    用于 products_db 模糊匹配时扩大命中范围。
+    """
+    candidates = [model]
+    slug = _slug(model).lower()
+    aliases = _load_model_aliases()
+    for row in aliases:
+        cn = (row.get("cn_model") or "").strip()
+        gl = (row.get("global_model") or "").strip()
+        brand = (row.get("brand") or "").strip()
+        if not cn or not gl:
+            continue
+        cn_slug = _slug(cn).lower()
+        gl_slug = _slug(gl).lower()
+        # 如果用户输入匹配 cn_model，则 global_model 是别名
+        if cn_slug and cn_slug in slug:
+            if gl not in candidates:
+                candidates.append(gl)
+            # 也尝试带品牌的 global model
+            if brand and f"{brand} {gl}" not in candidates:
+                candidates.append(f"{brand} {gl}")
+        # 如果用户输入匹配 global_model，则 cn_model 是别名
+        if gl_slug and gl_slug in slug:
+            if cn not in candidates:
+                candidates.append(cn)
+            if brand and f"{brand} {cn}" not in candidates:
+                candidates.append(f"{brand} {cn}")
+    return candidates
+
+
 def _lookup_msrp_from_db(model: str) -> Optional[float]:
     db = _load_products_db()
-    slug = _slug(model).lower()
-    for key, entry in db.items():
-        if slug in key.lower() or key.lower() in slug:
-            price = entry.get("retail_price_cny")
-            if price:
-                return float(price)
+    # 用候选名（原始 + model_aliases 别名）扩大匹配
+    candidates = _resolve_candidate_names(model)
+    for candidate in candidates:
+        slug = _slug(candidate).lower()
+        for key, entry in db.items():
+            if slug in _slug(key).lower() or _slug(key).lower() in slug:
+                price = entry.get("retail_price_cny")
+                if price:
+                    return float(price)
     return None
 
 
+def _has_existing_teardown(model: str) -> bool:
+    """检查产品是否已有拆机 CSV（不限日期），用于判断是否可跳过 web 调研。"""
+    if find_csv(model):
+        return True
+    slug = _slug(model)
+    return any(TEARDOWN_DIR.glob(f"{slug}_*_teardown*.csv"))
+
+
 def _canonical_product_name(model: str) -> str:
-    """从 products_db.json 查找规范化产品名，用于 product_source 字段统一。"""
+    """从 products_db.json 查找规范化产品名，用于 product_source 字段统一。
+
+    先通过 model_aliases.csv 解析候选名，再在 products_db 中匹配。
+    """
     db = _load_products_db()
-    slug = _slug(model).lower()
+    candidates = _resolve_candidate_names(model)
     best_key = None
     best_score = 0
-    for key in db:
-        k_slug = _slug(key).lower()
-        # 精确包含匹配
-        if slug == k_slug:
-            return key
-        if slug in k_slug or k_slug in slug:
-            score = len(set(slug) & set(k_slug))
-            if score > best_score:
-                best_score = score
-                best_key = key
+    for candidate in candidates:
+        slug = _slug(candidate).lower()
+        for key in db:
+            k_slug = _slug(key).lower()
+            if slug == k_slug:
+                return key
+            if slug in k_slug or k_slug in slug:
+                score = len(set(slug) & set(k_slug))
+                if score > best_score:
+                    best_score = score
+                    best_key = key
     return best_key or model
 
 
@@ -1596,16 +1683,15 @@ def run_pipeline(model: str, msrp: float,
     fcc_rows = load_fcc_rows(slug)
 
     # Stage 1: Discovery (LLM 用 model 原名, 不用 canonical_key)
+    # 查已有数据: 优先匹配已有拆机 CSV（不限日期），有则跳过 web 调研
     if existing_csv and existing_csv.exists():
         rows = load_csv(existing_csv)
-        print(f"  ✓ 加载现有 CSV: {existing_csv.name}（{len(rows)} 条）")
+        print(f"  ✓ 加载指定 CSV: {existing_csv.name}（{len(rows)} 条，跳过 Stage 1 web 调研）")
     else:
-        # 自动检测今天是否已有同名 CSV（避免重复跑 Stage 1）
-        today_tag = __import__("datetime").date.today().strftime("%Y%m%d")
-        auto_csv = TEARDOWN_DIR / f"{slug}_{today_tag}_teardown.csv"
-        if auto_csv.exists():
+        auto_csv = find_csv(canonical_key) or find_csv(model)
+        if auto_csv:
             rows = load_csv(auto_csv)
-            print(f"  ✓ 自动加载今日已有 CSV: {auto_csv.name}（{len(rows)} 条，跳过 Stage 1）")
+            print(f"  ✓ 自动加载已有 CSV: {auto_csv.name}（{len(rows)} 条，跳过 Stage 1 web 调研）")
         else:
             rows = stage1_discovery(model, msrp, fcc_rows=fcc_rows)
             if not rows:
@@ -1668,17 +1754,35 @@ def main() -> None:
         model = stem.replace("_", " ")
     slug  = _slug(model)
 
-    # 解析 MSRP
+    # 解析 MSRP — 查已有数据 + 型号别名解析，有拆机数据时跳过 web 查价
     msrp = args.msrp or _lookup_msrp_from_db(model)
     if not msrp:
-        msrp = lookup_msrp_from_web(model)
+        if _has_existing_teardown(model) or _has_existing_teardown(_canonical_product_name(model)):
+            print(f"  → {model!r} 数据库无 MSRP 但已有拆机数据，跳过 web 查价")
+            msrp = 5000.0
+        else:
+            msrp = lookup_msrp_from_web(model)
     msrp = msrp or 5000.0
 
     # 输出路径: 默认带今天日期, 便于版本追溯
     today_tag = __import__("datetime").date.today().strftime("%Y%m%d")
     csv_out = args.out or TEARDOWN_DIR / f"{slug}_{today_tag}_teardown.csv"
 
+    # 数据库状态摘要：告诉用户哪些数据已存在、哪些需要联网
+    db_has_msrp = bool(args.msrp or _lookup_msrp_from_db(model))
+    db_has_teardown = _has_existing_teardown(model) or _has_existing_teardown(_canonical_product_name(model))
+    status_parts = []
+    status_parts.append(f"MSRP: {'DB' if db_has_msrp else 'web查价' if not args.msrp else 'CLI指定'}")
+    status_parts.append(f"拆机: {'已有CSV' if db_has_teardown or args.csv else 'web调研'}")
+    if db_has_teardown and db_has_msrp:
+        status_parts.append("→ 全部数据已在库，无需联网搜索")
+    elif db_has_teardown or db_has_msrp:
+        status_parts.append("→ 部分数据已就绪，减少联网")
+    else:
+        status_parts.append("→ 新产品，需要联网调研")
+
     print(f"\n机型: {model}  |  零售价: {msrp:.0f} 元  |  输出: {csv_out.name}")
+    print(f"数据状态: {' | '.join(status_parts)}")
     print("=" * 60)
 
     # 执行 Pipeline
