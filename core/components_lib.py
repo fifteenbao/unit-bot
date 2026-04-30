@@ -3,8 +3,8 @@
 
 CSV 字段：
   id, bom_bucket, bom_bucket_cn, name, name_en, tier, model_numbers,
-  spec, cost_min, cost_max, unit, price_tier, suppliers, confidence,
-  models, last_updated
+  spec, cost_min, cost_max, unit, price_tier, suppliers, make_or_buy,
+  confidence, models, last_updated
 
 price_tier — 定价档位(BOM 成本分析务必使用 mass_production):
   - mass_production: 量产FOB价 (年采 >1万 件的供应商报价, 默认)
@@ -23,8 +23,14 @@ LIB_FILE = Path(__file__).parent.parent / "data" / "lib" / "components_lib.csv"
 LIB_FIELDS = [
     "id", "bom_bucket", "bom_bucket_cn", "name", "name_en",
     "tier", "model_numbers", "spec", "cost_min", "cost_max", "unit",
-    "price_tier", "suppliers", "confidence", "models", "last_updated",
+    "price_tier", "suppliers", "make_or_buy", "confidence", "models", "last_updated",
 ]
+
+MAKE_OR_BUY_NAMES = {
+    "outsource": "外采",
+    "inhouse":   "自制/自产",
+    "mixed":     "部分外采+部分自制",
+}
 
 PRICE_TIER_NAMES = {
     "mass_production": "量产FOB价",

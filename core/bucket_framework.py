@@ -175,3 +175,100 @@ def audit_coverage(rows: list[dict], bucket_field: str = "bom_bucket",
             "status": status,
         }
     return result
+
+
+def level1_validation() -> dict:
+    """返回一级成本大类的 pct_range 校验规则。"""
+    return load_framework()["validation_rules"].get("level1_pct_validation", {})
+
+
+def level1_reference_costs() -> dict:
+    """返回一级成本大类的描述与参考成本区间。"""
+    return load_framework()["teardown_hierarchy"]["level1_categories"]
+
+
+def estimate_level1_costs(hardware_bom_cny: float, msrp: float = 0) -> dict:
+    """根据硬件 BOM 实测值 + 固定参考成本估算整机全成本。
+
+    核心逻辑: 非硬件成本(人工/物流/研发均摊/销售管理)单台相对固定，不随 BOM 波动。
+    硬件物料是唯一高度可变的成本项。
+
+    segment 判定:
+      - msrp ≥ 4000 → flagship
+      - msrp ≥ 2000 → mid
+      - 其余 → entry
+
+    返回 {name: {cost, pct, source}, ...}，含 '整机全成本 (估算)' 汇总行。
+    """
+    l1c = level1_reference_costs()
+    if not l1c:
+        return {}
+
+    # 判定档位
+    if msrp >= 4000:
+        segment = "flagship"
+    elif msrp >= 2000:
+        segment = "mid"
+    else:
+        segment = "entry"
+
+    # 非硬件成本: 从 reference_cost 取对应档位值 (固定, 不随 BOM 波动)
+    fixed_costs: dict[str, float] = {}
+    for name in ["人工+机器折旧", "销售+管理费用", "研发均摊", "仓储物流售后"]:
+        ref = l1c.get(name, {}).get("reference_cost", {})
+        fixed_costs[name] = float(ref.get(segment, 0))
+
+    fixed_total = sum(fixed_costs.values())
+    total_estimated = hardware_bom_cny + fixed_total
+
+    result = {}
+    result["硬件物料 (7桶)"] = {
+        "cost": round(hardware_bom_cny, 0),
+        "pct": round(hardware_bom_cny / total_estimated * 100, 1) if total_estimated else 0,
+        "source": "BOM 实测",
+        "note": "★ 唯一高度可变项，随功能配置差异显著",
+    }
+
+    for name in ["人工+机器折旧", "销售+管理费用", "研发均摊", "仓储物流售后"]:
+        cost = fixed_costs[name]
+        result[name] = {
+            "cost": round(cost, 0),
+            "pct": round(cost / total_estimated * 100, 1) if total_estimated else 0,
+            "source": f"{segment}档 固定参考",
+            "note": "单台成本相对固定，不随 BOM 波动",
+        }
+
+    result["整机全成本 (估算)"] = {
+        "cost": round(total_estimated, 0),
+        "pct": 100.0,
+        "source": "",
+        "segment": segment,
+    }
+
+    return result
+
+
+def sensor_tiers() -> dict:
+    """返回感知桶的高/中/低三档传感器方案定义。"""
+    return load_framework()["buckets"]["perception"].get("sensor_tiers", {})
+
+
+def detect_sensor_tier(bom_rows: list[dict]) -> str:
+    """从 BOM 行中检测产品的传感器档位。
+
+    检测规则:
+      - 高配: 包含 结构光/dToF/视觉摄像头/AI加速器 任一
+      - 中配: 包含 激光雷达/LDS/ToF
+      - 低配: 仅包含 IMU/碰撞/地检 等基础传感器
+
+    返回 "high" / "mid" / "low"。
+    """
+    names_blob = " ".join(
+        (r.get("name") or "") + " " + (r.get("spec") or "")
+        for r in bom_rows
+    )
+    if any(kw in names_blob for kw in ["结构光", "dToF", "视觉摄像", "AI加速", "RGB摄像", "NPU"]):
+        return "high"
+    if any(kw in names_blob for kw in ["激光雷达", "LDS", "ToF", "TOF", "线激光"]):
+        return "mid"
+    return "low"

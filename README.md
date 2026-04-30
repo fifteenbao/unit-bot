@@ -2,10 +2,7 @@
 
 **扫地机器人 BOM 成本分析平台** — 竞品拆机 · 7 桶成本核算 · FCC 采集 · 降本优化
 
-- 语言：Python 3.10+
-- 接入：OpenClaw / 飞书 / Slack / CLI
 - 数据：`data/` 目录私有，框架模板和型号映射公开入 git
-- 授权：内部工具，非公开发布
 
 ---
 
@@ -72,12 +69,22 @@ openclaw skills add https://github.com/fifteenbao/unit-bot
 Agent 自动完成：查规格 → 爬元器件 → 7 桶成本 → 供应链/风险 → 竞品对比。输出拆机 CSV + 控制台报告。
 降本方案不在 `/bom` 输出，统一通过 `/dfma` 命令获取。
 
-### 路径 B · CLI 直接运行
+### 路径 B · 本地 CLI
+
+先设置 LLM API Key（三选一）：
+
+```bash
+export AIHUBMIX_API_KEY=sk-xxx    # 推荐，有 web_search
+export DEEPSEEK_API_KEY=sk-xxx    # 便宜，无 web_search
+export ANTHROPIC_API_KEY=sk-xxx   # 原生
+```
+
+然后运行：
 
 ```bash
 # 1. 采集 FCC 文档（可选，有 FCC 数据时 Stage 0 优先使用）
-python scripts/fetch_fcc.py find "石头G30S Pro"   # 查链接，供人工确认
-python scripts/fetch_fcc.py ocr  "石头G30S Pro"   # 确认后下载 PDF + OCR
+python scripts/fetch_fcc.py find "石头G30S Pro"
+python scripts/fetch_fcc.py ocr  "石头G30S Pro"
 
 # 2. 生成拆机 BOM（4-Stage）
 python scripts/gen_teardown.py "石头G30S Pro"
@@ -85,21 +92,10 @@ python scripts/gen_teardown.py "石头G30S Pro"
 # 3. 更新标准件库价格（可选）
 python scripts/update_prices.py --dry-run
 python scripts/update_prices.py
-```
 
-### 路径 C · 本地调试（AIHUBMIX 代理，免翻墙、成本低）
-
-```bash
-export AIHUBMIX_API_KEY=sk-xxx
-export AIHUBMIX_MODEL=gpt-4o          # 默认 gpt-4.1-mini
-
-python scripts/gen_teardown.py "卧安 K10+ Pro Combo"
-
-# 跳过爬虫，复用已有 CSV 调试 Stage 2-4
-python scripts/gen_teardown.py --csv data/teardowns/卧安K10+_20260422_teardown.csv "卧安K10+"
-
-# 指定 MSRP，跳过自动查询
-python scripts/gen_teardown.py --msrp 2999 "卧安 K10+ Pro Combo"
+# 调试技巧
+python scripts/gen_teardown.py --csv data/teardowns/xxx_teardown.csv "xxx"   # 跳过 Stage 1，复用已有 CSV
+python scripts/gen_teardown.py --msrp 2999 "xxx"                              # 指定 MSRP，跳过自动查询
 ```
 
 ---
@@ -275,16 +271,15 @@ DFMA 功能-成本矩阵分析。基于 7 桶 BOM 数据 × `user_value_weight` 
 
 ---
 
-## 环境变量
+## 环境变量（仅本地 CLI 需要，Agent/OpenClaw 路径不需要）
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `ANTHROPIC_API_KEY` | — | Anthropic 原生 API，走 server-side web_search |
-| `AIHUBMIX_API_KEY` | — | OpenAI-compatible 代理（优先级高于 Anthropic） |
-| `AIHUBMIX_MODEL` | `gpt-4.1-mini` | 指定代理使用的模型 |
-| `AIHUBMIX_BASE_URL` | `https://aihubmix.com/v1` | 代理 base URL |
+三选一即可，优先级：AIHUBMIX > DeepSeek > Anthropic。
 
-> 两个 API Key 同时存在时，优先走 `AIHUBMIX_API_KEY`。
+| 变量 | 说明 |
+|------|------|
+| `AIHUBMIX_API_KEY` | 优先级最高，带服务端 web_search |
+| `DEEPSEEK_API_KEY` | 次优先，便宜但无 web_search |
+| `ANTHROPIC_API_KEY` | 兜底，需能直连 Anthropic API |
 
 ---
 
