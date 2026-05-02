@@ -64,6 +64,7 @@ from core.bucket_framework import (  # noqa: E402
     bucket_pct_range,
     bucket_pct_tolerance,
     buckets_ordered,
+    detect_product_features,
     estimate_level1_costs,
     expected_bom_msrp_ratio,
     render_prompt_bucket_section,
@@ -995,9 +996,9 @@ def apply_rules_overlay(rows: list[dict]) -> list[dict]:
 #  Stage 3 — Coverage Audit（对照 framework typical_items 检查覆盖）
 # ══════════════════════════════════════════════════════════════════
 
-def stage3_coverage_audit(rows: list[dict]) -> dict:
+def stage3_coverage_audit(rows: list[dict], features: dict[str, bool] | None = None) -> dict:
     """对照 framework typical_items 报告每桶缺失关键子项。"""
-    coverage = audit_coverage(rows)
+    coverage = audit_coverage(rows, features=features)
     total = len(rows)
 
     print(f"\n  [Stage 3] 7桶覆盖审计（共 {total} 条 | 对照 core/bom_8bucket_framework.json）")
@@ -1189,6 +1190,7 @@ def stage4_aggregate_audit(
     rows: list[dict], msrp: float,
     coverage: dict | None = None,
     fill_by_framework: bool = True,
+    features: dict[str, bool] | None = None,
 ) -> dict:
     """对每行查价 → 按桶汇总 → 对照 framework 占比基准做偏差告警 + 诊断建议。
 
@@ -1248,7 +1250,7 @@ def stage4_aggregate_audit(
     if fill_by_framework:
         # 用 audit_coverage 的 missing 列表作为缺件源 (与 Stage 3 一致)
         from core.bucket_framework import audit_coverage as _audit
-        cov_for_fill = _audit(rows)
+        cov_for_fill = _audit(rows, features=features)
         for bkt, _ in BUCKETS:
             present_names = set(cov_for_fill[bkt].get("present", []))
             missing_names = set(cov_for_fill[bkt].get("missing", []))
@@ -1257,7 +1259,7 @@ def stage4_aggregate_audit(
 
             # mutex_group 处理: 组内任一已 present 则跳过组内其他 missing
             # (例如双转盘/滚筒/履带三类拖布, 这台机已录履带 → 跳过双转盘和滚筒)
-            items = typical_items_with_qty(bkt)
+            items = typical_items_with_qty(bkt, features=features)
             covered_groups: set[str] = set()
             for name, _, mg in items:
                 if mg and name in present_names:
@@ -1296,6 +1298,28 @@ def stage4_aggregate_audit(
                     "name": name, "qty": default_qty,
                     "unit": round(unit_price, 2), "line": line, "src": src,
                 })
+
+                # 补缺零件写入 rows, 确保 CSV 输出完整 (避免 BOM 硬件估算偏低)
+                today_fill = __import__("datetime").date.today().isoformat()
+                src_model = rows[0].get("product_source", "") if rows else ""
+                fill_row = {
+                    "bom_bucket": bkt,
+                    "section": "",
+                    "name": name,
+                    "model": "",
+                    "type": "",
+                    "spec": "",
+                    "manufacturer": "",
+                    "qty": default_qty,
+                    "source_url": "",
+                    "updated_at": today_fill,
+                    "product_source": src_model,
+                    "confidence": "framework_fill",
+                    "_unit_price": round(unit_price, 2),
+                    "_line_cost": line,
+                    "_price_src": f"fill:{src}",
+                }
+                rows.append(fill_row)
 
                 # 本次 fill 命中后, 标记同组已覆盖 (避免组内 missing 重复补)
                 if mutex_group:
@@ -1554,20 +1578,57 @@ def _canonical_product_name(model: str) -> str:
     """
     db = _load_products_db()
     candidates = _resolve_candidate_names(model)
+    for candidate in candidates:
+        cand_slug = _slug(candidate).lower()
+        core = re.sub(r"[^a-z0-9]", "", cand_slug)
+        for key in db:
+            key_slug = _slug(key).lower()
+            if cand_slug == key_slug:
+                return key
+            if core and len(core) >= 3 and core in key_slug:
+                return key
+    # fallback: 模糊子串匹配
     best_key = None
     best_score = 0
     for candidate in candidates:
         slug = _slug(candidate).lower()
         for key in db:
             k_slug = _slug(key).lower()
-            if slug == k_slug:
-                return key
             if slug in k_slug or k_slug in slug:
                 score = len(set(slug) & set(k_slug))
                 if score > best_score:
                     best_score = score
                     best_key = key
     return best_key or model
+
+
+def _lookup_product_entry(model: str) -> dict | None:
+    """从 products_db.json 查找产品条目，返回完整 dict 或 None。
+
+    支持 model_aliases.csv 别名解析。
+    匹配策略: 先从 model 提取核心标识符(字母数字部分)，在 key slug 中匹配，
+    再 fallback 到完整 slug 子串匹配。
+    """
+    db = _load_products_db()
+    if not db:
+        return None
+    candidates = _resolve_candidate_names(model)
+    for candidate in candidates:
+        cand_slug = _slug(candidate).lower()
+        # 提取核心型号标识 (如 g30spro, x30pro)
+        core = re.sub(r"[^a-z0-9]", "", cand_slug)
+        if len(core) < 3:
+            core = cand_slug
+        for key, entry in db.items():
+            key_slug = _slug(key).lower()
+            # 精确匹配 > 核心型号匹配 > 子串匹配
+            if cand_slug == key_slug:
+                return entry
+            if core and core in key_slug:
+                return entry
+            if cand_slug in key_slug or key_slug in cand_slug:
+                return entry
+    return None
 
 
 def lookup_msrp_from_web(model: str) -> float:
@@ -1719,11 +1780,23 @@ def run_pipeline(model: str, msrp: float,
     # 规则二次归桶 (复用 analyze_c33 的 KEYWORD_RULES + 聚合标记 + 辅料识别)
     rows = apply_rules_overlay(rows)
 
+    # 产品特性检测: 从 products_db.json 提取硬件配置标志, 用于过滤 framework 中不适用项
+    product_entry = _lookup_product_entry(canonical_key)
+    product_specs = (product_entry or {}).get("specs", {})
+    product_notes = (product_entry or {}).get("notes", "")
+    features = detect_product_features(product_specs, product_notes)
+    if product_entry:
+        active_flags = [k for k, v in features.items() if v]
+        if active_flags:
+            print(f"  → 产品特性: {', '.join(active_flags)}")
+    else:
+        print(f"  ⚠ products_db 中未找到 {canonical_key!r}, 使用默认全量 framework 项")
+
     # Stage 3: Coverage Audit (对照 framework typical_items 报缺失关键子项)
-    coverage = stage3_coverage_audit(rows)
+    coverage = stage3_coverage_audit(rows, features=features)
 
     # Stage 4: Aggregate & Bias Audit (7 桶金额 + ±5% 占比偏差告警 + coverage 诊断)
-    money = stage4_aggregate_audit(rows, msrp, coverage=coverage)
+    money = stage4_aggregate_audit(rows, msrp, coverage=coverage, features=features)
 
     return rows, {
         "msrp": msrp,

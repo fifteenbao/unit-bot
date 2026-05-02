@@ -12,59 +12,146 @@
   "teardown_hierarchy": {
     "description": "整机成本的4级分解结构。一级为5大成本类别(7桶框架只覆盖硬件物料),二级为7桶,三级为每桶下的功能模块,四级为最小可计价组件。",
     "levels": [
-      {"level": 1, "name": "一级·成本大类", "categories": ["硬件物料", "人工+机器折旧", "销售+管理费用", "研发均摊", "仓储物流成本"], "description": "整机全成本顶层分类,7桶全部属于硬件物料"},
-      {"level": 2, "name": "二级·7桶", "description": "BOM硬件成本分析核心框架"},
-      {"level": 3, "name": "三级·功能模块", "description": "每桶下的功能子系统,按物理拆机组织"},
-      {"level": 4, "name": "四级·组件", "description": "最小可计价单元,对应BOM单行"}
+      {
+        "level": 1,
+        "name": "一级·成本大类",
+        "categories": [
+          "硬件物料",
+          "人工+机器折旧",
+          "销售+管理费用",
+          "研发均摊",
+          "仓储物流成本"
+        ],
+        "description": "整机全成本顶层分类,7桶全部属于硬件物料"
+      },
+      {
+        "level": 2,
+        "name": "二级·7桶",
+        "description": "BOM硬件成本分析核心框架"
+      },
+      {
+        "level": 3,
+        "name": "三级·功能模块",
+        "description": "每桶下的功能子系统,按物理拆机组织"
+      },
+      {
+        "level": 4,
+        "name": "四级·组件",
+        "description": "最小可计价单元,对应BOM单行"
+      }
     ],
     "level1_categories": {
       "硬件物料": {
         "description": "物理拆机可见的全部硬件零件成本,7桶框架完整覆盖",
-        "buckets": ["compute_electronics", "perception", "power_motion", "cleaning", "dock_station", "energy", "structure_cmf"],
+        "buckets": [
+          "compute_electronics",
+          "perception",
+          "power_motion",
+          "cleaning",
+          "dock_station",
+          "energy",
+          "structure_cmf"
+        ],
         "pct_of_total_cost": "约 45-55%",
         "pct_of_manufacturing": "约 80-87%",
         "note": "★ 唯一高度可变的成本项，随功能模块差异价格相差较大。其余4项单台成本相对固定。",
-        "reference_cost": {"entry": 550, "mid": 1000, "flagship": 1750}
+        "reference_cost": {
+          "entry": 550,
+          "mid": 1000,
+          "flagship": 1750
+        }
       },
       "人工+机器折旧": {
         "description": "组装产线人工、SMT贴片机时、注塑机台折旧、检测设备摊销。不在7桶框架内。",
         "note": "覆盖: 组装人工+外协、QA出厂检测 (原第8桶子项); 单台成本相对固定",
         "pct_of_total_cost": "约 8-12%",
-        "reference_cost": {"entry": 115, "mid": 200, "flagship": 325}
+        "reference_cost": {
+          "entry": 115,
+          "mid": 200,
+          "flagship": 325
+        }
       },
       "销售+管理费用": {
         "description": "渠道分销、品牌营销、售后返修备件、行政人力分摊。不在7桶框架内。",
         "note": "不直接计入BOM,在整机毛利模型中核算; 旗舰机型渠道+营销费用显著高于中低档,但同档内单台成本相对固定",
         "pct_of_total_cost": "约 25-35%",
-        "reference_cost": {"entry": 275, "mid": 600, "flagship": 1150}
+        "reference_cost": {
+          "entry": 275,
+          "mid": 600,
+          "flagship": 1150
+        }
       },
       "研发均摊": {
         "description": "SLAM算法/OS授权、模具NRE一次性费用按生命周期台数分摊。不在7桶框架内。",
         "note": "覆盖: SLAM/导航算法版税、OS/固件授权 (原第8桶子项); 大厂依赖规模效应,单台均摊并不高 (~150-200元)",
         "pct_of_total_cost": "约 3-8%",
-        "reference_cost": {"entry": 55, "mid": 115, "flagship": 175}
+        "reference_cost": {
+          "entry": 55,
+          "mid": 115,
+          "flagship": 175
+        }
       },
       "仓储物流售后": {
         "description": "包材(彩箱+外箱+说明书+干燥剂)、整机成品仓租金、干线/支线运输、运输保险、售后备件/返修。不在7桶框架内。",
         "note": "覆盖: 包装材料、物流/运保、售后备件 (原第8桶子项拆入); 整机体积/重量决定物流成本,单台相对固定",
         "pct_of_total_cost": "约 8-12%",
-        "reference_cost": {"entry": 105, "mid": 200, "flagship": 325}
+        "reference_cost": {
+          "entry": 105,
+          "mid": 200,
+          "flagship": 325
+        }
       }
     },
     "level3_systems": {
       "description": "物理拆机的三级系统视图。主机端6系统+基站端3系统,共9个物理系统全部映射到7个硬件物料桶。",
       "主机端": [
-        {"system": "导航系统",   "bucket": "perception",           "note": "LDS+前视ToF+线激光+沿墙+超声波+IMU+地检+碰撞+霍尔+麦克风"},
-        {"system": "清洁系统",   "bucket": "cleaning",              "note": "恒压活水洗地+高密度滚刷+活水循环+边刷+尘盒+水箱水泵+拖布支架"},
-        {"system": "驱动系统",   "bucket": "power_motion",          "note": "吸尘风机+驱动轮+边轮+万向轮+越障升降"},
-        {"system": "主板系统",   "bucket": "compute_electronics",   "note": "SoC+RAM+ROM+WiFi/BT+PMIC+PCB+阻容+MCU+功放"},
-        {"system": "电池系统",   "bucket": "energy",                "note": "锂电池包(电芯+BMS+封装+连接线)"},
-        {"system": "结构系统",   "bucket": "structure_cmf",         "note": "上盖+中框+底盘+保险杠+LDS装饰+尘盒舱盖+模具摊销+CMF+紧固件"}
+        {
+          "system": "导航系统",
+          "bucket": "perception",
+          "note": "LDS+前视ToF+线激光+沿墙+超声波+IMU+地检+碰撞+霍尔+麦克风"
+        },
+        {
+          "system": "清洁系统",
+          "bucket": "cleaning",
+          "note": "恒压活水洗地+高密度滚刷+活水循环+边刷+尘盒+水箱水泵+拖布支架"
+        },
+        {
+          "system": "驱动系统",
+          "bucket": "power_motion",
+          "note": "吸尘风机+驱动轮+边轮+万向轮+越障升降"
+        },
+        {
+          "system": "主板系统",
+          "bucket": "compute_electronics",
+          "note": "SoC+RAM+ROM+WiFi/BT+PMIC+PCB+阻容+MCU+功放"
+        },
+        {
+          "system": "电池系统",
+          "bucket": "energy",
+          "note": "锂电池包(电芯+BMS+封装+连接线)"
+        },
+        {
+          "system": "结构系统",
+          "bucket": "structure_cmf",
+          "note": "上盖+中框+底盘+保险杠+LDS装饰+尘盒舱盖+模具摊销+CMF+紧固件"
+        }
       ],
       "基站端": [
-        {"system": "外壳系统",   "bucket": "dock_station",          "note": "上盖+中框+底座+后壳+隔板"},
-        {"system": "水路系统",   "bucket": "dock_station",          "note": "清水桶+污水桶+清洗盘+水泵+电磁阀+PTC烘干+顶杆升降+水路杂件"},
-        {"system": "电气系统",   "bucket": "dock_station",          "note": "电源板+集尘风机+充电弹片+子PCBA+传感开关+AC电源线+集尘管路"}
+        {
+          "system": "外壳系统",
+          "bucket": "dock_station",
+          "note": "上盖+中框+底座+后壳+隔板"
+        },
+        {
+          "system": "水路系统",
+          "bucket": "dock_station",
+          "note": "清水桶+污水桶+清洗盘+水泵+电磁阀+PTC烘干+顶杆升降+水路杂件"
+        },
+        {
+          "system": "电气系统",
+          "bucket": "dock_station",
+          "note": "电源板+集尘风机+充电弹片+子PCBA+传感开关+AC电源线+集尘管路"
+        }
       ]
     }
   },
@@ -74,36 +161,118 @@
     "segment": "flagship",
     "description": "科沃斯 T80 实物拆机四级成本数据,作为7桶框架基准校准的参考标杆。T80 主打恒压活水洗地+多传感器融合导航+全能基站,清洁和感知成本显著高于行业均值。",
     "level1_costs": {
-      "硬件物料": {"cost_cny": "约 1,700", "pct": "~49%"},
-      "人工+机器折旧": {"cost_cny": "约 300", "pct": "~9%"},
-      "销售+管理费用": {"cost_cny": "1,000+", "pct": "~29%"},
-      "研发均摊": {"cost_cny": "150-200", "pct": "~5%"},
-      "仓储物流售后": {"cost_cny": "300+", "pct": "~9%"}
+      "硬件物料": {
+        "cost_cny": "约 1,700",
+        "pct": "~49%"
+      },
+      "人工+机器折旧": {
+        "cost_cny": "约 300",
+        "pct": "~9%"
+      },
+      "销售+管理费用": {
+        "cost_cny": "1,000+",
+        "pct": "~29%"
+      },
+      "研发均摊": {
+        "cost_cny": "150-200",
+        "pct": "~5%"
+      },
+      "仓储物流售后": {
+        "cost_cny": "300+",
+        "pct": "~9%"
+      }
     },
     "level2_buckets": {
-      "cleaning": {"cost_cny": "500+", "pct": "~29%", "note": "恒压活水洗地+高密度滚刷+活水循环+水箱水泵,成本远高于行业均值,是T80核心卖点"},
-      "perception": {"cost_cny": "400+", "pct": "~23%", "note": "LDS自产+3D结构光+视觉+IMU+接近传感器+AI加速器,传感器配置拉满"},
-      "dock_station": {"cost_cny": "250-300", "pct": "~16%", "note": "全能基站但成本控制好,说明基站不一定都是成本黑洞"},
-      "compute_electronics": {"cost_cny": "150-200", "pct": "~10%", "note": "PCBA+主控芯片+外围电子,占比与框架基准吻合"},
-      "structure_cmf": {"cost_cny": "约 200", "pct": "~12%", "note": "结构壳料+模具摊销+CMF,占比与框架基准吻合"},
-      "energy": {"cost_cny": "约 50", "pct": "~3%", "note": "电池容量偏小,旗舰机靠基站频繁回充,能源占比低于行业基准"}
+      "cleaning": {
+        "cost_cny": "500+",
+        "pct": "~29%",
+        "note": "恒压活水洗地+高密度滚刷+活水循环+水箱水泵,成本远高于行业均值,是T80核心卖点"
+      },
+      "perception": {
+        "cost_cny": "400+",
+        "pct": "~23%",
+        "note": "LDS自产+3D结构光+视觉+IMU+接近传感器+AI加速器,传感器配置拉满"
+      },
+      "dock_station": {
+        "cost_cny": "250-300",
+        "pct": "~16%",
+        "note": "全能基站但成本控制好,说明基站不一定都是成本黑洞"
+      },
+      "compute_electronics": {
+        "cost_cny": "150-200",
+        "pct": "~10%",
+        "note": "PCBA+主控芯片+外围电子,占比与框架基准吻合"
+      },
+      "structure_cmf": {
+        "cost_cny": "约 200",
+        "pct": "~12%",
+        "note": "结构壳料+模具摊销+CMF,占比与框架基准吻合"
+      },
+      "energy": {
+        "cost_cny": "约 50",
+        "pct": "~3%",
+        "note": "电池容量偏小,旗舰机靠基站频繁回充,能源占比低于行业基准"
+      }
     },
     "level3_modules": {
       "清洁模块 (cleaning)": [
-        {"module": "恒压活水洗地系统", "components": ["动态压力调节系统", "驱动电机"]},
-        {"module": "高密度滚刷", "components": ["滚刷本体", "尼龙纤维"]},
-        {"module": "活水循环系统", "components": ["喷淋系统", "流量传感器", "加热系统"]},
-        {"module": "吸尘电机"},
-        {"module": "水箱水泵及精密机械结构", "components": ["电控阀", "液位传感器", "污水刮条", "污水箱"]}
+        {
+          "module": "恒压活水洗地系统",
+          "components": [
+            "动态压力调节系统",
+            "驱动电机"
+          ]
+        },
+        {
+          "module": "高密度滚刷",
+          "components": [
+            "滚刷本体",
+            "尼龙纤维"
+          ]
+        },
+        {
+          "module": "活水循环系统",
+          "components": [
+            "喷淋系统",
+            "流量传感器",
+            "加热系统"
+          ]
+        },
+        {
+          "module": "吸尘电机"
+        },
+        {
+          "module": "水箱水泵及精密机械结构",
+          "components": [
+            "电控阀",
+            "液位传感器",
+            "污水刮条",
+            "污水箱"
+          ]
+        }
       ],
       "传感器及导航 (perception)": [
-        {"module": "激光雷达"},
-        {"module": "3D结构光模组"},
-        {"module": "视觉摄像头"},
-        {"module": "惯性测量模块 (IMU)"},
-        {"module": "接近传感器"},
-        {"module": "AI加速器"},
-        {"module": "主控芯片"}
+        {
+          "module": "激光雷达"
+        },
+        {
+          "module": "3D结构光模组"
+        },
+        {
+          "module": "视觉摄像头"
+        },
+        {
+          "module": "惯性测量模块 (IMU)"
+        },
+        {
+          "module": "接近传感器"
+        },
+        {
+          "module": "AI加速器"
+        },
+        {
+          "module": "主控芯片"
+        }
       ]
     }
   },
@@ -231,25 +400,67 @@
         "description": "传感器接入方案按高/中/低三档划分,直接影响 perception 桶的成本与占比。",
         "low": {
           "name": "低配·纯惯导",
-          "sensors": ["IMU 6轴", "轮速计/里程计", "碰撞传感器", "地检/下视(红外)"],
-          "perception_cost_range_cny": [20, 80],
-          "perception_pct_of_bom": [2, 5],
+          "sensors": [
+            "IMU 6轴",
+            "轮速计/里程计",
+            "碰撞传感器",
+            "地检/下视(红外)"
+          ],
+          "perception_cost_range_cny": [
+            20,
+            80
+          ],
+          "perception_pct_of_bom": [
+            2,
+            5
+          ],
           "typical_product": "入门机 (¥1,000-2,000), 无基站或纯充电桩, 陀螺仪导航",
           "note": "无激光雷达/ToF/视觉,仅靠IMU+轮速计推算航位。清扫路径随机碰撞,无结构化建图。"
         },
         "mid": {
           "name": "中配·激光雷达",
-          "sensors": ["激光雷达 (LDS)", "IMU 6轴", "沿墙线激光", "超声波模块", "地检/下视", "碰撞传感器", "霍尔开关"],
-          "perception_cost_range_cny": [150, 350],
-          "perception_pct_of_bom": [8, 14],
+          "sensors": [
+            "激光雷达 (LDS)",
+            "IMU 6轴",
+            "沿墙线激光",
+            "超声波模块",
+            "地检/下视",
+            "碰撞传感器",
+            "霍尔开关"
+          ],
+          "perception_cost_range_cny": [
+            150,
+            350
+          ],
+          "perception_pct_of_bom": [
+            8,
+            14
+          ],
           "typical_product": "中档机 (¥2,000-4,000), 含 LDS+沿墙+超声波, 可选 ToF 补盲",
           "note": "LDS 2D 三角测距为行业标配,结构化建图+路径规划。可选配基础ToF或单目RGB避障。"
         },
         "high": {
           "name": "高配·视觉 AI",
-          "sensors": ["激光雷达 (LDS)", "3D 结构光/dToF", "RGB 视觉摄像头", "AI 加速器 (NPU)", "IMU 6轴", "沿墙线激光", "超声波模块", "地检/下视", "接近传感器", "麦克风阵列"],
-          "perception_cost_range_cny": [300, 600],
-          "perception_pct_of_bom": [12, 25],
+          "sensors": [
+            "激光雷达 (LDS)",
+            "3D 结构光/dToF",
+            "RGB 视觉摄像头",
+            "AI 加速器 (NPU)",
+            "IMU 6轴",
+            "沿墙线激光",
+            "超声波模块",
+            "地检/下视",
+            "接近传感器",
+            "麦克风阵列"
+          ],
+          "perception_cost_range_cny": [
+            300,
+            600
+          ],
+          "perception_pct_of_bom": [
+            12,
+            25
+          ],
           "typical_product": "旗舰机 (¥4,000+), 全功能基站, 多传感器融合+AI视觉避障",
           "note": "3D结构光+RGB视觉+AI加速器实现语义识别避障。LDS自产是科沃斯等品牌的核心壁垒。"
         }
@@ -375,7 +586,8 @@
           "name": "越障升降机构",
           "example_spec": "底盘升降齿条+导轨 (进阶项)",
           "default_qty": 1,
-          "section": "越障机构"
+          "section": "越障机构",
+          "condition": "obstacle_lift"
         }
       ],
       "boundary_notes": [
@@ -433,7 +645,8 @@
           "name": "拖布支架 / 机械臂",
           "example_spec": "抬升+伸缩+安装检测 (进阶项)",
           "default_qty": 1,
-          "section": "恒压活水洗地"
+          "section": "恒压活水洗地",
+          "condition": "mop_lift|mop_extend"
         },
         {
           "name": "滚刷组件 (浮动中扫)",
@@ -519,49 +732,57 @@
           "name": "基站清水桶组件",
           "example_spec": "含过滤网+活塞+密封",
           "default_qty": 1,
-          "section": "水路系统"
+          "section": "水路系统",
+          "condition": "auto_wash"
         },
         {
           "name": "基站污水桶组件",
           "example_spec": "含水位检测+浮球",
           "default_qty": 1,
-          "section": "水路系统"
+          "section": "水路系统",
+          "condition": "auto_wash"
         },
         {
           "name": "清洗盘 + 刮条",
           "example_spec": "拖布清洗盘+刮条+水路",
           "default_qty": 1,
-          "section": "水路系统"
+          "section": "水路系统",
+          "condition": "auto_wash"
         },
         {
           "name": "基站水泵组件",
           "example_spec": "进水泵+排水泵+污水气泵 汇总",
           "default_qty": 1,
-          "section": "水路系统"
+          "section": "水路系统",
+          "condition": "auto_wash"
         },
         {
           "name": "电磁阀 (基站)",
           "example_spec": "12V 水路阀 (多路)",
           "default_qty": 1,
-          "section": "水路系统"
+          "section": "水路系统",
+          "condition": "auto_wash"
         },
         {
           "name": "PTC 加热 + 烘干风扇",
           "example_spec": "100-150W PTC + 小功率离心风扇",
           "default_qty": 1,
-          "section": "水路系统"
+          "section": "水路系统",
+          "condition": "hot_air_dry"
         },
         {
           "name": "顶杆升降机构 + 电机",
           "example_spec": "减速电机+齿条+检测",
           "default_qty": 1,
-          "section": "水路系统"
+          "section": "水路系统",
+          "condition": "auto_wash"
         },
         {
           "name": "基站水路杂件",
           "example_spec": "水桶轴+防折管+门+按键",
           "default_qty": 1,
-          "section": "水路系统"
+          "section": "水路系统",
+          "condition": "auto_wash"
         },
         {
           "name": "基站电源板",
@@ -573,13 +794,15 @@
           "name": "基站集尘风机",
           "example_spec": "650W 有刷, 真空度 ≥15kPa",
           "default_qty": 1,
-          "section": "电气系统"
+          "section": "电气系统",
+          "condition": "auto_empty"
         },
         {
           "name": "集尘管路 + 集尘袋",
           "example_spec": "管路+转接+EVA+2-3L 袋",
           "default_qty": 1,
-          "section": "电气系统"
+          "section": "电气系统",
+          "condition": "auto_empty"
         },
         {
           "name": "充电弹片 + 回充组件",
@@ -741,11 +964,41 @@
     "description": "每桶实际占比与 industry_pct_avg 偏差 > bucket_pct_tolerance 需标记为重点关注项。7桶总计为硬件物料BOM成本,BOM/MSRP比例低于区间下限或高于上限时需核查BOM完整性。其余4个一级大类(人工+机器折旧/销售+管理费用/研发均摊/仓储物流售后)不纳入BOM/MSRP计算。",
     "level1_pct_validation": {
       "description": "一级成本大类占整机全成本的合理区间,用于校验整机成本模型是否合理",
-      "硬件物料": {"pct_range": [45, 55], "note": "7桶合计占整机全成本"},
-      "人工+机器折旧": {"pct_range": [8, 12], "note": "组装+QA+设备折旧"},
-      "销售+管理费用": {"pct_range": [25, 35], "note": "渠道+品牌+售后备件+行政"},
-      "研发均摊": {"pct_range": [3, 8], "note": "SLAM/OS授权+NRE摊销"},
-      "仓储物流售后": {"pct_range": [8, 12], "note": "包材+仓租+运输+保险+返修"}
+      "硬件物料": {
+        "pct_range": [
+          45,
+          55
+        ],
+        "note": "7桶合计占整机全成本"
+      },
+      "人工+机器折旧": {
+        "pct_range": [
+          8,
+          12
+        ],
+        "note": "组装+QA+设备折旧"
+      },
+      "销售+管理费用": {
+        "pct_range": [
+          25,
+          35
+        ],
+        "note": "渠道+品牌+售后备件+行政"
+      },
+      "研发均摊": {
+        "pct_range": [
+          3,
+          8
+        ],
+        "note": "SLAM/OS授权+NRE摊销"
+      },
+      "仓储物流售后": {
+        "pct_range": [
+          8,
+          12
+        ],
+        "note": "包材+仓租+运输+保险+返修"
+      }
     }
   }
 }

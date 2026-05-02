@@ -47,12 +47,99 @@ def bucket_pct_avg(key: str) -> float:
     return load_framework()["buckets"][key]["industry_pct_avg"] / 100.0
 
 
-def typical_item_names(key: str) -> list[str]:
-    """返回某桶的典型子项名列表"""
-    return [it["name"] for it in load_framework()["buckets"][key]["typical_items"]]
+def detect_product_features(specs: dict | None, notes: str = "") -> dict[str, bool]:
+    """从产品 specs + notes 检测硬件功能特性标志。
+
+    返回 {feature_flag: True/False, ...}，用于过滤 framework 中带 condition 的典型子项。
+    """
+    s = specs or {}
+    n = (notes or "").lower()
+    return {
+        # 基站存在性 (auto_empty/auto_wash/self_cleaning 任一为 True 则有机站)
+        "has_dock": (
+            s.get("auto_empty") is True
+            or s.get("auto_wash") is True
+            or s.get("self_cleaning") is True
+        ),
+        # 自动集尘
+        "auto_empty": s.get("auto_empty") is True,
+        # 基站自清洁 (洗拖布)
+        "auto_wash": s.get("auto_wash") is True,
+        # 热风烘干
+        "hot_air_dry": s.get("hot_air_dry") is True,
+        # 拖布抬升
+        "mop_lift": s.get("mop_lift") is True,
+        # 自动上下水 (从 notes 检测)
+        "auto_water": "上下水" in n,
+        # 升降雷达 (从 notes 检测)
+        "lift_radar": "升降雷达" in n or "雷达升降" in n,
+        # 拖布延边 / 机械臂 (从 notes 检测)
+        "mop_extend": any(k in n for k in ("延边", "机械臂", "伸缩拖布")),
+        # 履带驱动 (从 notes 检测)
+        "track_drive": "履带" in n,
+        # 越障底盘升降 (从 notes 或 specs 检测)
+        "obstacle_lift": "越障" in n or (s.get("obstacle_height_cm") or 0) >= 4,
+        # 导航类型
+        "nav_lidar": s.get("navigation", "") in ("激光导航", "LDS"),
+        "nav_rgb": s.get("navigation", "") in ("RGB", "双目", "双目RGB"),
+        "nav_ai": s.get("navigation", "") in ("GPT大模型", "AI"),
+    }
 
 
-def typical_items_with_qty(key: str) -> list[tuple[str, int, str]]:
+def _is_item_applicable(item: dict, features: dict[str, bool] | None) -> bool:
+    """检查 typical_item 是否对当前产品适用 (condition 字段过滤)。
+
+    condition 语法:
+      - "flag"           → features["flag"] 为 True 时包含
+      - "!flag"          → features["flag"] 为 False 时包含
+      - "a,b"            → a AND b (都为 True 才包含)
+      - "a|b"            → a OR b (任一为 True 即包含)
+      - "a|b,c"          → (a OR b) AND c (| 优先级高于 ,)
+    """
+    if not features:
+        return True
+    cond = item.get("condition", "").strip()
+    if not cond:
+        return True
+    # 按逗号拆 AND 组, 每组内按 | 拆 OR
+    for and_part in cond.split(","):
+        and_part = and_part.strip()
+        if not and_part:
+            continue
+        or_parts = [p.strip() for p in and_part.split("|") if p.strip()]
+        if not or_parts:
+            continue
+        or_match = False
+        for p in or_parts:
+            if p.startswith("!"):
+                if not features.get(p[1:], False):
+                    or_match = True
+                    break
+            else:
+                if features.get(p, False):
+                    or_match = True
+                    break
+        if not or_match:
+            return False
+    return True
+
+
+def _get_applicable_items(key: str, features: dict[str, bool] | None) -> list[dict]:
+    """返回某桶所有满足 condition 的 typical_items (按 product features 过滤)。"""
+    # 桶级 gate: 无基站产品跳过整个 dock_station 桶
+    if features and key == "dock_station" and not features.get("has_dock"):
+        return []
+    items = load_framework()["buckets"][key]["typical_items"]
+    return [it for it in items if _is_item_applicable(it, features)]
+
+
+def typical_item_names(key: str, features: dict[str, bool] | None = None) -> list[str]:
+    """返回某桶的典型子项名列表 (按 product features 过滤不适用项)。"""
+    return [it["name"] for it in _get_applicable_items(key, features)]
+
+
+def typical_items_with_qty(key: str, features: dict[str, bool] | None = None
+                           ) -> list[tuple[str, int, str]]:
     """返回某桶 [(name, default_qty, mutex_group), ...]; mutex_group 缺省空字符串.
 
     mutex_group: 互斥组标记 (如 "mop_form" 表示双转盘/滚筒/履带三类拖布同组).
@@ -60,7 +147,7 @@ def typical_items_with_qty(key: str) -> list[tuple[str, int, str]]:
     """
     return [
         (it["name"], int(it.get("default_qty", 1)), it.get("mutex_group", ""))
-        for it in load_framework()["buckets"][key]["typical_items"]
+        for it in _get_applicable_items(key, features)
     ]
 
 
@@ -129,12 +216,14 @@ def bucket_keys() -> list[str]:
 
 
 def audit_coverage(rows: list[dict], bucket_field: str = "bom_bucket",
-                   name_field: str = "name") -> dict:
+                   name_field: str = "name",
+                   features: dict[str, bool] | None = None) -> dict:
     """
     对照 framework 的 typical_items, 检查每桶覆盖缺口。
     返回 {bucket: {"count": n, "present": [...], "missing": [...], "status": "✓/△/⚠"}}。
 
     覆盖判定: typical_item 的 name 关键词 (取前 4 字) 出现在任意行的 name 中即算 present。
+    features: detect_product_features() 输出, 用于过滤带 condition 的典型子项。
     """
     fw = load_framework()
     result: dict[str, dict] = {}
@@ -149,22 +238,26 @@ def audit_coverage(rows: list[dict], bucket_field: str = "bom_bucket",
     for bkey, bdef in fw["buckets"].items():
         bucket_rows = by_bucket[bkey]
         names_blob = " ".join((r.get(name_field) or "") for r in bucket_rows)
+        applicable = _get_applicable_items(bkey, features)
         present, missing = [], []
-        for it in bdef["typical_items"]:
+        for it in applicable:
             # 取子项名前 4 字作为关键词 (避免"主控 SoC" vs "SoC" 这种漏匹)
             key_frag = it["name"].replace(" ", "").replace("/", "")[:4]
-            if key_frag and key_frag in names_blob.replace(" ", ""):
+            if key_frag and key_frag in names_blob.replace(" ", "").replace("/", ""):
                 present.append(it["name"])
             else:
                 missing.append(it["name"])
 
         count = len(bucket_rows)
-        if count == 0:
+        total_applicable = len(applicable)
+        if total_applicable == 0:
+            status = "— 不适用 (无该功能)"
+        elif count == 0:
             status = "⚠ 无数据"
-        elif len(missing) > len(bdef["typical_items"]) * 0.6:
-            status = f"△ 覆盖不全 ({len(present)}/{len(bdef['typical_items'])})"
+        elif len(missing) > total_applicable * 0.6:
+            status = f"△ 覆盖不全 ({len(present)}/{total_applicable})"
         else:
-            status = f"✓ 覆盖 {len(present)}/{len(bdef['typical_items'])}"
+            status = f"✓ 覆盖 {len(present)}/{total_applicable}"
 
         result[bkey] = {
             "name_cn": bdef["name_cn"],
