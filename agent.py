@@ -1324,8 +1324,7 @@ CLIENT_TOOLS: list[dict] = [
         "name": "generate_bom_estimate",
         "description": (
             "按7桶结构（算力与电子/感知系统/动力与驱动/清洁功能/基站系统/能源系统/整机结构CMF）"
-            "生成 BOM 成本预估表，基站占比按市场定位自动调整，自动写回产品的 bom_cost 字段。"
-            "原第8桶「MVA+软件授权」已拆分到一级成本大类。\n"
+            "生成 BOM 成本预估表，基站占比按市场定位自动调整，自动写回产品的 bom_cost 字段。\n"
             "overrides 可传入已知成本，如 {\"compute_electronics_cny\": 280, \"energy_cny\": 200}。"
         ),
         "input_schema": {
