@@ -79,6 +79,11 @@ from core.bom_rules import (  # noqa: E402
 )
 from core.components_lib import load_lib  # noqa: E402
 from core.auxiliary_parts import estimate_auxiliary_cost, get_bucket_default_price, AUX_DFMA_IMPACT  # noqa: E402
+from core.materials_lib import (  # noqa: E402
+    structure_cmf_material_breakdown,
+    print_structure_cmf_breakdown,
+    load_suppliers,
+)
 
 # ── BOM 7桶 (从 core/bom_8bucket_framework.json 动态加载) ───────
 BUCKETS = buckets_ordered()                      # [(key, name_cn), ...]
@@ -101,6 +106,32 @@ CSV_FIELDS = [
 
 def _slug(model: str) -> str:
     return re.sub(r"[\s\-]+", "", model)
+
+
+def _bucket_suppliers(bom_bucket: str, tier_filter: str | None = None) -> list[dict]:
+    """返回与指定 bom_bucket 相关的供应商列表（来自 suppliers.csv）。"""
+    try:
+        suppliers = load_suppliers()
+    except Exception:
+        return []
+    results = []
+    for rec in suppliers.values():
+        if bom_bucket not in rec.category:
+            continue
+        if tier_filter and tier_filter not in rec.tier:
+            continue
+        results.append({
+            "supplier_id":   rec.supplier_id,
+            "name":          rec.name,
+            "name_en":       rec.name_en,
+            "tier":          rec.tier,
+            "typical_parts": rec.typical_parts,
+            "region":        rec.region,
+        })
+    # 一线优先，然后二线，最后三线
+    tier_order = {"一线": 0, "二线": 1, "三线": 2}
+    results.sort(key=lambda x: tier_order.get(x["tier"], 9))
+    return results
 
 
 def _norm_price(val) -> float:
@@ -221,7 +252,7 @@ def _merge_fcc_first(fcc_rows: list[dict], discovery_rows: list[dict]) -> list[d
 #
 #  优先级：
 #    1. AIHUBMIX_API_KEY 存在 → OpenAI-compatible（aihubmix，带服务端 web_search）
-#    2. DEEPSEEK_API_KEY 存在  → DeepSeek 官方 API（便宜，但无服务端 web_search，走单轮）
+#    2. DEEPSEEK_API_KEY 存在  → DeepSeek 官方 API（多轮 agent loop，客户端 DuckDuckGo 搜索 + httpx 抓取）
 #    3. ANTHROPIC_API_KEY 存在 → Anthropic 原生（带 server-side web_search + web_fetch）
 # ══════════════════════════════════════════════════════════════════
 
@@ -455,50 +486,267 @@ def _run_web_agent_openai(system: str, user: str, max_tokens: int = 8192) -> str
     return message.get("content") or ""
 
 
+# DeepSeek 客户端工具定义 (OpenAI-compatible function calling, 由本脚本自行执行)
+_DEEPSEEK_CLIENT_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "搜索互联网获取最新信息。返回相关结果的标题、URL 和摘要。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "搜索关键词"}
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_fetch",
+            "description": "抓取指定 URL 的网页内容并提取纯文本。用于获取拆机报告、产品规格页面等详细内容。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "要抓取的网页 URL"}
+                },
+                "required": ["url"],
+            },
+        },
+    },
+]
+
+
+def _client_web_search(query: str, max_results: int = 8) -> str:
+    """客户端执行 DuckDuckGo 搜索，返回格式化文本结果。"""
+    import httpx as _httpx
+
+    try:
+        with _httpx.Client(timeout=15) as h:
+            r = h.get(
+                "https://html.duckduckgo.com/html/",
+                params={"q": query},
+                headers={"User-Agent": "Mozilla/5.0 (compatible; BOMAnalyzer/1.0)"},
+            )
+            if r.status_code != 200:
+                return f"搜索失败: HTTP {r.status_code}"
+            html = r.text
+    except Exception as e:
+        return f"搜索失败: {type(e).__name__}: {e}"
+
+    # 解析 DuckDuckGo HTML 结果
+    results: list[str] = []
+    links = re.findall(
+        r'<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>', html
+    )
+    snippets = re.findall(
+        r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>', html
+    )
+
+    for i, (url, title) in enumerate(links[:max_results]):
+        title_clean = re.sub(r"<[^>]+>", "", title).strip()
+        snippet_clean = ""
+        if i < len(snippets):
+            snippet_clean = re.sub(r"<[^>]+>", "", snippets[i]).strip()
+        results.append(f"{i + 1}. {title_clean}\n   URL: {url}\n   {snippet_clean}")
+
+    if not results:
+        return f"搜索 '{query}' 无结果。"
+    return "\n\n".join(results)
+
+
+def _client_web_fetch(url: str, max_chars: int = 6000) -> str:
+    """客户端抓取 URL 并提取文本内容。"""
+    import httpx as _httpx
+
+    try:
+        with _httpx.Client(timeout=20, follow_redirects=True) as h:
+            r = h.get(
+                url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                },
+            )
+            if r.status_code != 200:
+                return f"抓取失败: HTTP {r.status_code}"
+            html = r.text
+    except Exception as e:
+        return f"抓取失败: {type(e).__name__}: {e}"
+
+    # 提取文本: 移除 script/style/nav/footer/header, 然后去 HTML 标签
+    html = re.sub(
+        r"<(script|style|nav|footer|header|noscript)[^>]*>.*?</\1>",
+        "", html, flags=re.DOTALL | re.IGNORECASE,
+    )
+    text = re.sub(r"<[^>]+>", " ", html)
+    text = re.sub(r"&[a-z]+;", " ", text)  # &nbsp; &amp; 等
+    text = re.sub(r"\s+", " ", text).strip()
+
+    if len(text) > max_chars:
+        text = text[:max_chars] + f"\n\n…[截断, 原文共 {len(text)} 字符]"
+    return f"[web_fetch: {url}]\n\n{text}"
+
+
 def _run_web_agent_deepseek(system: str, user: str, max_tokens: int = 8192) -> str:
-    """DeepSeek 官方 API — 单轮 completion，无服务端 web_search 工具。
-    提示词中已注入「基于训练知识直接输出」指令，不依赖实时搜索。
+    """DeepSeek API — 多轮 agent loop，客户端自行执行 web_search / web_fetch。
+
+    模型发起 tool_calls → 本脚本执行 web_search( DuckDuckGo )/web_fetch( httpx ) →
+    结果注入 messages → 继续推理 → 直到模型输出最终文本或触预算上限。
     """
     import httpx as _httpx
     import time
 
-    # 在 system prompt 中追加说明：无 web search，直接基于训练知识回答
-    system_with_note = (
-        f"{system}\n\n"
-        f"⚠ 注意：当前 backend (DeepSeek) 不支持实时网络搜索。"
-        f"请基于你的训练知识直接输出结果，不要调用或等待 web_search。"
-    )
-
-    messages = [
-        {"role": "system", "content": system_with_note},
+    messages: list[dict] = [
+        {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
 
-    body = {
-        "model": _DEEPSEEK_MODEL,
-        "max_tokens": max_tokens,
-        "messages": messages,
-    }
+    round_n = 0
+    tool_call_count = 0
 
-    print(f"    → DeepSeek ({_DEEPSEEK_MODEL}) 单轮推理 (无 web search)…")
-    t0 = time.monotonic()
-
-    def _call():
-        with _httpx.Client(timeout=180) as h:
-            r = h.post(
-                f"{_DEEPSEEK_BASE}/chat/completions",
-                headers={"Authorization": f"Bearer {_DEEPSEEK_KEY}"},
-                json=body,
+    # ── 多轮搜索主循环 ──────────────────────────────────────
+    try:
+        while round_n < _MAX_AGENT_ROUNDS:
+            round_n += 1
+            budget_used = (
+                (tool_call_count >= _MAX_TOOL_CALLS and round_n >= 2)
+                or round_n == _MAX_AGENT_ROUNDS
             )
-            if r.status_code != 200:
-                raise RuntimeError(f"DeepSeek 返回 {r.status_code}: {r.text[:500]}")
-            return r.json()
+            if budget_used:
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"⚠ 已用满 {tool_call_count}/{_MAX_TOOL_CALLS} 次工具调用预算. "
+                        "立即停止搜索, 综合已收集的全部信息, 直接输出最终 JSON 数组. "
+                        "不要再调用任何工具."
+                    ),
+                })
 
-    data = _api_call_with_retry(_call, label="DeepSeek")
-    elapsed = time.monotonic() - t0
-    content = data["choices"][0]["message"].get("content", "")
-    print(f"    ⏱ DeepSeek 完成 ({elapsed:.1f}s, {len(content)} chars)")
-    return content
+            t0 = time.monotonic()
+            if tool_call_count == 0:
+                print(f"    → DeepSeek ({_DEEPSEEK_MODEL}) 多轮调研 (客户端 web_search)…")
+
+            body: dict = {
+                "model": _DEEPSEEK_MODEL,
+                "max_tokens": max_tokens,
+                "messages": messages,
+                "tools": _DEEPSEEK_CLIENT_TOOLS,
+                "tool_choice": "none" if budget_used else "auto",
+            }
+
+            def _call():
+                with _httpx.Client(timeout=180) as h:
+                    r = h.post(
+                        f"{_DEEPSEEK_BASE}/chat/completions",
+                        headers={"Authorization": f"Bearer {_DEEPSEEK_KEY}"},
+                        json=body,
+                    )
+                    if r.status_code != 200:
+                        raise RuntimeError(f"DeepSeek 返回 {r.status_code}: {r.text[:500]}")
+                    return r.json()
+
+            data = _api_call_with_retry(_call, label="DeepSeek")
+            elapsed = time.monotonic() - t0
+
+            choice = data["choices"][0]
+            message = choice["message"]
+            messages.append(message)
+
+            tcs = message.get("tool_calls") or []
+            if tcs:
+                tool_call_count += len(tcs)
+                tool_results: list[dict] = []
+                for tc in tcs:
+                    fn = tc.get("function", {})
+                    fn_name = fn.get("name", "?")
+                    fn_args_str = fn.get("arguments", "{}")
+                    try:
+                        fn_args = json.loads(fn_args_str) if fn_args_str else {}
+                    except Exception:
+                        fn_args = {}
+
+                    if fn_name == "web_search":
+                        query = fn_args.get("query", "")
+                        hint = (query[:80] + "…") if len(query) > 80 else query
+                        print(
+                            f"    ⏱ [round {round_n}, tools {tool_call_count}/{_MAX_TOOL_CALLS}] "
+                            f"web_search: {hint}  ({elapsed:.1f}s)"
+                        )
+                        result = _client_web_search(query)
+                    elif fn_name == "web_fetch":
+                        url = fn_args.get("url", "")
+                        hint = (url[:80] + "…") if len(url) > 80 else url
+                        print(
+                            f"    ⏱ [round {round_n}, tools {tool_call_count}/{_MAX_TOOL_CALLS}] "
+                            f"web_fetch: {hint}  ({elapsed:.1f}s)"
+                        )
+                        result = _client_web_fetch(url)
+                    else:
+                        result = f"未知工具: {fn_name}"
+
+                    tool_results.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": result,
+                    })
+                messages.extend(tool_results)
+            else:
+                content = message.get("content") or ""
+                if tool_call_count > 0:
+                    print(
+                        f"    ⏱ [round {round_n}] 调研完成 (共 {tool_call_count} 次搜索, "
+                        f"{len(content)} chars, {elapsed:.1f}s)"
+                    )
+                else:
+                    print(
+                        f"    ⏱ DeepSeek 直接返回 (无搜索需求, {len(content)} chars, "
+                        f"{elapsed:.1f}s)"
+                    )
+                return content
+
+            if choice.get("finish_reason") == "stop":
+                return message.get("content") or ""
+
+        # 撞 _MAX_AGENT_ROUNDS 兜底
+        return message.get("content") or ""
+
+    except Exception as _ds_err:
+        # ── 搜索阶段 API 故障降级 ───────────────────────────────
+        # 如果已积累搜索数据，回退到单轮推理（不带 tools，把抓取结果拼进 prompt）
+        if tool_call_count > 0:
+            print(
+                f"    ⚠ DeepSeek API 异常 ({type(_ds_err).__name__}), "
+                f"已收集 {tool_call_count} 次搜索结果, 降级为单轮推理…"
+            )
+            try:
+                fallback_body = {
+                    "model": _DEEPSEEK_MODEL,
+                    "max_tokens": max_tokens,
+                    "messages": messages,
+                }
+                with _httpx.Client(timeout=180) as h:
+                    fr = h.post(
+                        f"{_DEEPSEEK_BASE}/chat/completions",
+                        headers={"Authorization": f"Bearer {_DEEPSEEK_KEY}"},
+                        json=fallback_body,
+                    )
+                    if fr.status_code == 200:
+                        fb_data = fr.json()
+                        fb_content = fb_data["choices"][0]["message"].get("content", "")
+                        print(f"    ⏱ 降级推理完成 ({len(fb_content)} chars)")
+                        return fb_content
+            except Exception:
+                pass
+            # 降级也失败 → 抛异常，让上层 stage1_discovery 处理
+        raise
 
 
 def _run_web_agent(system: str, user: str, max_tokens: int = 8192) -> str:
@@ -975,6 +1223,10 @@ def apply_rules_overlay(rows: list[dict]) -> list[dict]:
         r["_rule_bucket"] = rule_bucket or llm_bucket
         r["_lib_hint"] = hint
         r["_agg_note"] = note
+        # 通用聚合兜底: name 含 "散件" / "汇总" 但规则未匹配 → 自动打聚合标记
+        if not is_aggregate(note) and any(k in name for k in ("散件", "汇总")):
+            note = note + "(聚合)" if note else "通用(聚合)"
+            r["_agg_note"] = note
         if is_aggregate(note):
             aggregates += 1
         if is_aux(name):
@@ -1191,6 +1443,7 @@ def stage4_aggregate_audit(
     coverage: dict | None = None,
     fill_by_framework: bool = True,
     features: dict[str, bool] | None = None,
+    msrp_source: str = "",
 ) -> dict:
     """对每行查价 → 按桶汇总 → 对照 framework 占比基准做偏差告警 + 诊断建议。
 
@@ -1387,10 +1640,26 @@ def stage4_aggregate_audit(
             )
         print(f"  {name_cn:16s} {bucket_counts[bkt]:>4d}  {cost:>10.2f}  "
               f"{pct:>6.1f}%  {target_pct:>7.0f}%  {status}")
+        mat_bd: dict | None = None
+        sup_list: list[dict] | None = None
+        if bkt == "structure_cmf" and cost > 0:
+            print_structure_cmf_breakdown(cost, indent=4)
+            mat_bd = structure_cmf_material_breakdown(cost)
+            sup_list = _bucket_suppliers("structure_cmf")
+            if sup_list:
+                pad = "    "
+                print(f"{pad}┌─ structure_cmf 主要供应商")
+                for s in sup_list:
+                    print(f"{pad}│  [{s['tier']}] {s['name']}（{s['name_en']}）— {s['typical_parts']}")
+                print(f"{pad}└─")
+        elif cost > 0:
+            sup_list = _bucket_suppliers(bkt)
         bucket_money[bkt] = {
             "label": name_cn, "cost": round(cost, 2),
             "pct": round(pct, 1), "target_pct": round(target_pct, 1),
             "count": bucket_counts[bkt], "status": status,
+            **({"material_breakdown": mat_bd} if mat_bd else {}),
+            **({"key_suppliers": sup_list} if sup_list else {}),
         }
 
     bias_alerts.extend(floor_alerts)
@@ -1462,8 +1731,9 @@ def stage4_aggregate_audit(
     if msrp and grand_with_aux:
         bom_ratio = grand_with_aux / msrp * 100
         ratio_status = "✓" if ratio_lo <= bom_ratio <= ratio_hi else "⚠"
+        src_hint = f" (MSRP 来源: {msrp_source})" if msrp_source else ""
         print(f"\n  BOM/MSRP 比例 (含辅料): {bom_ratio:.1f}%  "
-              f"(framework 期望 {ratio_lo:.0f}-{ratio_hi:.0f}%)  {ratio_status}")
+              f"(framework 期望 {ratio_lo:.0f}-{ratio_hi:.0f}%)  {ratio_status}{src_hint}")
         if bom_ratio < ratio_lo:
             ratio_alert = (
                 f"BOM/MSRP {bom_ratio:.1f}% 低于期望下限 {ratio_lo:.0f}%, "
@@ -1472,7 +1742,7 @@ def stage4_aggregate_audit(
         elif bom_ratio > ratio_hi:
             ratio_alert = (
                 f"BOM/MSRP {bom_ratio:.1f}% 高于期望上限 {ratio_hi:.0f}%, "
-                f"疑似零件重复计价 或 MSRP 偏低"
+                f"疑似零件重复计价{'' if not msrp_source else ' 或 MSRP 来源不准 (' + msrp_source + ' 价格可能偏低)'}"
             )
         if ratio_alert:
             print(f"    ⚠ {ratio_alert}")
@@ -1741,7 +2011,8 @@ def _save_msrp_to_db(model: str, price_cny: float, source_url: str) -> None:
 # ══════════════════════════════════════════════════════════════════
 
 def run_pipeline(model: str, msrp: float,
-                 existing_csv: Optional[Path] = None) -> tuple[list[dict], dict]:
+                 existing_csv: Optional[Path] = None,
+                 msrp_source: str = "") -> tuple[list[dict], dict]:
     """完整执行 Stage 0 + 4-Stage Pipeline，返回 (rows, audit_report)。
 
     model:           用户原始输入 (如 '云鲸逍遥003'), 用作 LLM prompt 的 model 字段
@@ -1809,7 +2080,8 @@ def run_pipeline(model: str, msrp: float,
     coverage = stage3_coverage_audit(rows, features=features)
 
     # Stage 4: Aggregate & Bias Audit (7 桶金额 + ±5% 占比偏差告警 + coverage 诊断)
-    money = stage4_aggregate_audit(rows, msrp, coverage=coverage, features=features)
+    money = stage4_aggregate_audit(rows, msrp, coverage=coverage, features=features,
+                                    msrp_source=msrp_source)
 
     return rows, {
         "msrp": msrp,
@@ -1841,13 +2113,18 @@ def main() -> None:
     slug  = _slug(model)
 
     # 解析 MSRP — 查已有数据 + 型号别名解析，有拆机数据时跳过 web 查价
+    msrp_source = ""
     msrp = args.msrp or _lookup_msrp_from_db(model)
-    if not msrp:
+    if msrp:
+        msrp_source = "CLI --msrp" if args.msrp else "products_db.json"
+    else:
         if _has_existing_teardown(model) or _has_existing_teardown(_canonical_product_name(model)):
             print(f"  → {model!r} 数据库无 MSRP 但已有拆机数据，跳过 web 查价")
             msrp = 5000.0
+            msrp_source = "默认 ¥5000 (无价格数据)"
         else:
             msrp = lookup_msrp_from_web(model)
+            msrp_source = "web_search 实时查询"
     msrp = msrp or 5000.0
 
     # 输出路径: 默认带今天日期, 便于版本追溯
@@ -1877,6 +2154,7 @@ def main() -> None:
             model=model,
             msrp=msrp,
             existing_csv=args.csv,
+            msrp_source=msrp_source,
         )
     except RuntimeError as e:
         print(f"\n❌ {e}")

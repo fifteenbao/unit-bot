@@ -116,10 +116,11 @@ def _global_name(model: str, brand: str | None) -> str | None:
     return None
 
 
-def _get(url: str, retries: int = 3, stream: bool = False) -> requests.Response:
+def _get(url: str, retries: int = 3, stream: bool = False,
+         timeout: int | tuple = 20) -> requests.Response:
     for i in range(retries):
         try:
-            r = requests.get(url, headers=HEADERS, timeout=20, stream=stream)
+            r = requests.get(url, headers=HEADERS, timeout=timeout, stream=stream)
             r.raise_for_status()
             return r
         except Exception as e:
@@ -145,9 +146,17 @@ def get_grantee_applications(grantee_code: str) -> list[dict]:
     return [{"fcc_id": fid, "action_date": ""} for fid in ids]
 
 
+def _fccid_io_doc_url(fcc_id: str, title: str, doc_id: str) -> str:
+    """生成 fccid.io 文档查看页 URL（可在浏览器直接打开/下载）。"""
+    slug = re.sub(r"[^\w\s\-]", "", title).strip()
+    slug = re.sub(r"[\s]+", "-", slug)
+    return f"{FCCID_BASE}/{fcc_id}/{slug}/{doc_id}"
+
+
 def get_fcc_documents(fcc_id: str) -> list[dict]:
     """
-    从 fcc.report/FCC-ID/{fcc_id} 解析文档列表（静态 HTML，PDF 直链可用）。
+    从 fcc.report/FCC-ID/{fcc_id} 解析文档列表，同时生成 fccid.io 查看链接。
+    fccid.io 链接可在浏览器直接查看/下载，fcc.report PDF 直链有防盗链。
     """
     url  = f"{FCC_REPORT}/FCC-ID/{fcc_id}"
     html = _get(url).text
@@ -161,10 +170,11 @@ def get_fcc_documents(fcc_id: str) -> list[dict]:
         if not title:
             continue
         docs.append({
-            "doc_id":   doc_id,
-            "title":    title,
-            "pdf_url":  f"{FCC_REPORT}{href}.pdf",
-            "page_url": f"{FCC_REPORT}{href}",
+            "doc_id":       doc_id,
+            "title":        title,
+            "fccid_io_url": _fccid_io_doc_url(fcc_id, title, doc_id),
+            "pdf_url":      f"{FCC_REPORT}{href}.pdf",
+            "page_url":     f"{FCC_REPORT}{href}",
         })
     return docs
 
@@ -214,9 +224,17 @@ def match_fcc_id(applications: list[dict], search_name: str, model: str,
 
 # ── PDF 下载 → 本地 PNG ───────────────────────────────────────────
 
-def download_pdf(pdf_url: str, out_dir: Path, doc_label: str) -> Path:
+class DocumentConfidential(Exception):
+    """FCC 文档已申请保密或在 FCC.gov 上不存在（0 字节）。"""
+
+
+def download_pdf(pdf_url: str, out_dir: Path, doc_label: str,
+                 page_url: str | None = None,
+                 fccid_io_url: str | None = None) -> Path:
     """
     下载 PDF 保存本地，返回 PDF 路径。若已存在则跳过下载（缓存）。
+    优先 fcc.report（先 cookie 再下载），失败后尝试 fccid.io PDF URL。
+    若文档在 FCC.gov 上不存在（0字节/保密），抛出 DocumentConfidential。
     """
     safe_label = re.sub(r"[^\w\-]", "_", doc_label)[:40]
     pdf_dir    = out_dir / "pdfs"
@@ -227,13 +245,51 @@ def download_pdf(pdf_url: str, out_dir: Path, doc_label: str) -> Path:
         print(f"  ✓ 使用缓存 PDF：{out_path.name} ({out_path.stat().st_size//1024}KB)")
         return out_path
 
+    def _fetch(url: str, warmup: str | None = None) -> bytes:
+        session = requests.Session()
+        session.headers.update(HEADERS)
+        if warmup:
+            try:
+                session.get(warmup, timeout=(10, 30))
+            except Exception:
+                pass
+        for attempt in range(3):
+            try:
+                r = session.get(url, timeout=(15, 120), stream=True)
+                r.raise_for_status()
+                content = b"".join(r.iter_content(chunk_size=65536))
+                if b"%PDF" not in content[:10]:
+                    if b"Unavailable" in content or b"0 bytes" in content or b"Too Small" in content:
+                        raise DocumentConfidential("文档在 FCC.gov 上已保密或不存在（0 bytes）")
+                    raise ValueError(f"响应不是 PDF（前10字节: {content[:10]}）")
+                return content
+            except DocumentConfidential:
+                raise
+            except Exception as e:
+                if attempt == 2:
+                    raise
+                time.sleep(2 ** attempt)
+        raise RuntimeError("unreachable")
+
+    # 先尝试 fcc.report（cookie warmup）
     print(f"  → 下载 PDF: {pdf_url}")
-    r = _get(pdf_url)
-    if b"%PDF" not in r.content[:10]:
-        raise ValueError(f"响应不是 PDF（前10字节: {r.content[:10]}）")
-    out_path.write_bytes(r.content)
-    print(f"  ✓ 已保存：{out_path.name} ({len(r.content)//1024}KB)")
-    return out_path
+    try:
+        content = _fetch(pdf_url, warmup=page_url)
+        out_path.write_bytes(content)
+        print(f"  ✓ 已保存：{out_path.name} ({len(content)//1024}KB)")
+        return out_path
+    except DocumentConfidential:
+        raise
+    except Exception as e:
+        # 尝试 fccid.io 直接 PDF（URL 末尾加 .pdf）
+        if fccid_io_url:
+            alt_pdf = fccid_io_url.rstrip("/") + ".pdf"
+            print(f"  → fcc.report 失败（{e}），尝试 fccid.io: {alt_pdf}")
+            content = _fetch(alt_pdf, warmup=fccid_io_url)
+            out_path.write_bytes(content)
+            print(f"  ✓ 已保存（via fccid.io）：{out_path.name} ({len(content)//1024}KB)")
+            return out_path
+        raise
 
 
 def pdf_to_images_b64(pdf_path: Path, max_pages: int = 8) -> list[str]:
@@ -395,7 +451,9 @@ def fetch_fcc(model: str, fcc_id_override: str | None = None,
     for doc in target_docs[:3]:
         print(f"\n  ── {doc['title']} ──")
         try:
-            pdf_path = download_pdf(doc["pdf_url"], out_dir, doc["title"])
+            pdf_path = download_pdf(doc["pdf_url"], out_dir, doc["title"],
+                                    page_url=doc.get("page_url"),
+                                    fccid_io_url=doc.get("fccid_io_url"))
             downloaded_pdfs.append((doc, pdf_path))
             sources_used.append(doc["title"])
         except Exception as e:
@@ -527,14 +585,15 @@ def cmd_find(model: str, fcc_id_override: str | None, force: bool) -> None:
         fcc_id = cached.get("fcc_id", "")
         docs   = cached.get("docs", [])
         print(f"✓ 已有缓存（使用 --force 强制重新查找）：{links_file}")
-        print(f"  FCC ID:  {fcc_id}")
-        print(f"  fccid.io 页面:  https://fccid.io/{fcc_id}")
-        print(f"  fcc.report 页面: https://fcc.report/FCC-ID/{fcc_id}")
-        print(f"\n  文档列表（{len(docs)} 份）：")
+        print(f"  FCC ID:      {fcc_id}")
+        print(f"  fccid.io:    {FCCID_BASE}/{fcc_id}   ← 浏览器打开可查看全部文档")
+        priority = {"internal photos", "parts list", "block diagram"}
+        print(f"\n  文档列表（{len(docs)} 份，★ = 推荐 OCR 目标）：")
         for d in docs:
-            print(f"  [{d['doc_id']}] {d['title']}")
-            print(f"      页面: {d['page_url']}")
-            print(f"      PDF:  {d['pdf_url']}")
+            tag = " ★" if any(kw in d["title"].lower() for kw in priority) else ""
+            fccid_url = d.get("fccid_io_url") or _fccid_io_doc_url(fcc_id, d["title"], d["doc_id"])
+            print(f"  [{d['doc_id']}] {d['title']}{tag}")
+            print(f"      {fccid_url}")
         print(f"\n  下一步: python scripts/fetch_fcc.py ocr \"{model}\"")
         return
 
@@ -582,20 +641,17 @@ def cmd_find(model: str, fcc_id_override: str | None, force: bool) -> None:
     links_file.write_text(json.dumps(links_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(f"\n✓ 已保存链接索引：{links_file}")
-    print(f"  FCC ID:          {fcc_id}")
-    print(f"  fccid.io 页面:   https://fccid.io/{fcc_id}")
-    print(f"  fcc.report 页面: https://fcc.report/FCC-ID/{fcc_id}")
-    print(f"\n  文档列表（{len(docs)} 份）：")
+    print(f"  FCC ID:   {fcc_id}")
+    print(f"  fccid.io: {FCCID_BASE}/{fcc_id}   ← 浏览器打开可查看全部文档")
+    print(f"\n  文档列表（{len(docs)} 份，★ = 推荐 OCR 目标）：")
 
     priority = {"internal photos", "parts list", "block diagram"}
     for d in docs:
         tag = " ★" if any(kw in d["title"].lower() for kw in priority) else ""
         print(f"  [{d['doc_id']}] {d['title']}{tag}")
-        print(f"      页面: {d['page_url']}")
-        print(f"      PDF:  {d['pdf_url']}")
+        print(f"      {d.get('fccid_io_url', _fccid_io_doc_url(fcc_id, d['title'], d['doc_id']))}")
 
-    print(f"\n  ★ = 推荐 OCR 目标（Internal Photos / Parts List / Block Diagram）")
-    print(f"  下一步: python scripts/fetch_fcc.py ocr \"{model}\"")
+    print(f"\n  下一步: python scripts/fetch_fcc.py ocr \"{model}\"")
 
 
 # ── fcc_ocr：下载 PDF + 视觉 OCR ─────────────────────────────────
@@ -646,15 +702,34 @@ def cmd_ocr(model: str, fcc_id_override: str | None, force: bool) -> None:
     all_parts: list[dict] = []
     sources_used: list[str] = []
     downloaded_pdfs: list[tuple[dict, Path]] = []
+    confidential_count = 0
 
-    for doc in target_docs[:3]:
-        print(f"\n  ── {doc['title']} ──")
-        try:
-            pdf_path = download_pdf(doc["pdf_url"], out_dir, doc["title"])
-            downloaded_pdfs.append((doc, pdf_path))
-            sources_used.append(doc["title"])
-        except Exception as e:
-            print(f"  ⚠ {doc['title']} 下载失败: {e}")
+    def _try_download_docs(docs: list[dict], limit: int = 3) -> None:
+        nonlocal confidential_count
+        for doc in docs[:limit]:
+            print(f"\n  ── {doc['title']} ──")
+            try:
+                pdf_path = download_pdf(doc["pdf_url"], out_dir, doc["title"],
+                                        page_url=doc.get("page_url"),
+                                        fccid_io_url=doc.get("fccid_io_url"))
+                downloaded_pdfs.append((doc, pdf_path))
+                sources_used.append(doc["title"])
+            except DocumentConfidential as e:
+                print(f"  ⚠ 保密文档，跳过: {e}")
+                confidential_count += 1
+            except Exception as e:
+                print(f"  ⚠ {doc['title']} 下载失败: {e}")
+
+    _try_download_docs(target_docs)
+
+    # 若目标文档全部保密，自动 fallback 到 Test Report（通常含射频模组型号）
+    if not downloaded_pdfs and confidential_count > 0:
+        fallback_docs = [d for d in all_docs
+                         if any(kw in d["title"].lower()
+                                for kw in ("test report", "rf exposure", "appendix"))]
+        if fallback_docs:
+            print(f"\n  → 目标文档均已保密，fallback 到测试报告…")
+            _try_download_docs(fallback_docs, limit=2)
 
     for doc, pdf_path in downloaded_pdfs:
         print(f"\n  → OCR: {doc['title']}…")
@@ -667,6 +742,13 @@ def cmd_ocr(model: str, fcc_id_override: str | None, force: bool) -> None:
             sys.exit(1)
         except Exception as e:
             print(f"  ⚠ OCR 失败: {e}")
+
+    if not downloaded_pdfs:
+        if confidential_count > 0:
+            print(f"\n⚠ 所有文档均已保密，无可下载 PDF，该产品 FCC 内部照片不公开", file=sys.stderr)
+        else:
+            print(f"\n✗ 所有 PDF 下载失败，未保存 OCR 结果（下次重试无需 --force）", file=sys.stderr)
+        sys.exit(1)
 
     seen: set[str] = set()
     unique_parts: list[dict] = []

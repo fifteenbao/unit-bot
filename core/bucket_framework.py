@@ -215,6 +215,12 @@ def bucket_keys() -> list[str]:
     return [k for k, _ in sorted(fw["buckets"].items(), key=lambda kv: kv[1]["order"])]
 
 
+def _tokenize(name: str) -> set[str]:
+    """拆名称为 token 集合 (按分隔符切分, 滤掉过短的)。"""
+    tokens = re.split(r"[/\-\·,、()（）\s]+", (name or "").lower())
+    return {t for t in tokens if len(t) >= 2}
+
+
 def audit_coverage(rows: list[dict], bucket_field: str = "bom_bucket",
                    name_field: str = "name",
                    features: dict[str, bool] | None = None) -> dict:
@@ -222,7 +228,9 @@ def audit_coverage(rows: list[dict], bucket_field: str = "bom_bucket",
     对照 framework 的 typical_items, 检查每桶覆盖缺口。
     返回 {bucket: {"count": n, "present": [...], "missing": [...], "status": "✓/△/⚠"}}。
 
-    覆盖判定: typical_item 的 name 关键词 (取前 4 字) 出现在任意行的 name 中即算 present。
+    覆盖判定: framework 子项名拆为 token 集合, 与桶内各行名的 token 集合做交集;
+              交集 ≥ 子项 token 数 50% 即算 present。
+              (解决 "ROM / eMMC" vs "eMMC / ROM" 之类 token 顺序不一致问题)
     features: detect_product_features() 输出, 用于过滤带 condition 的典型子项。
     """
     fw = load_framework()
@@ -237,13 +245,23 @@ def audit_coverage(rows: list[dict], bucket_field: str = "bom_bucket",
 
     for bkey, bdef in fw["buckets"].items():
         bucket_rows = by_bucket[bkey]
-        names_blob = " ".join((r.get(name_field) or "") for r in bucket_rows)
         applicable = _get_applicable_items(bkey, features)
+        # 每行预 tokenize
+        row_token_sets = [_tokenize(r.get(name_field) or "") for r in bucket_rows]
         present, missing = [], []
         for it in applicable:
-            # 取子项名前 4 字作为关键词 (避免"主控 SoC" vs "SoC" 这种漏匹)
-            key_frag = it["name"].replace(" ", "").replace("/", "")[:4]
-            if key_frag and key_frag in names_blob.replace(" ", "").replace("/", ""):
+            it_tokens = _tokenize(it["name"])
+            if not it_tokens:
+                missing.append(it["name"])
+                continue
+            # 50% 以上 token 命中任意一行即算 present
+            matched = False
+            for row_tokens in row_token_sets:
+                overlap = it_tokens & row_tokens
+                if len(overlap) >= max(1, len(it_tokens) * 0.5):
+                    matched = True
+                    break
+            if matched:
                 present.append(it["name"])
             else:
                 missing.append(it["name"])
