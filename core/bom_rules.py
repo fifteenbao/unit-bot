@@ -163,13 +163,25 @@ KEYWORD_RULES: list[tuple[str, str, str, str]] = [
 # 建议：基于真实拆机 + AUX_PRICE + 行业经验设定
 # 目标：避免严重低估，同时不至于过度保守
 BUCKET_DEFAULT_PRICE = {
-    "compute_electronics": 1.2,   # 小芯片、电阻、电容、LED驱动等
-    "perception":          3.5,   # 传感器、ToF、IMU、摄像头周边件
-    "power_motion":        4.5,   # 电机、驱动轮相关未命中件
-    "cleaning":            4.0,   # 拖布电机、滚刷、边刷、水泵、刮条等
-    "dock_station":        3.5,   # 基站风机、水路接头、刮条、集尘相关
-    "energy":              6.0,   # 电池周边、BMS 配件、充电触点等
-    "structure_cmf":       3.8,   # 注塑件、支架、外壳、密封件等（最容易漏的桶）
+    "compute_electronics": 3.0,   # 小芯片、电阻、电容、LED驱动等
+    "perception":          6.0,   # 传感器、ToF、IMU、摄像头周边件
+    "power_motion":        7.0,   # 电机、驱动轮相关未命中件
+    "cleaning":            6.0,   # 拖布电机、滚刷、边刷、水泵、刮条等
+    "dock_station":        6.0,   # 基站风机、水路接头、刮条、集尘相关
+    "energy":              8.0,   # 电池周边、BMS 配件、充电触点等
+    "structure_cmf":       5.5,   # 注塑件、支架、外壳、密封件等（最容易漏的桶）
+}
+
+# ── 每桶最小兜底成本(元) — 防止完全无数据时严重低估 ──────────────
+# 当某桶所有零件都走兜底价时，总成本不应低于此下限
+BUCKET_MIN_FLOOR_COST = {
+    "structure_cmf": 55,
+    "cleaning":      45,
+    "dock_station":  40,
+    "perception":    55,
+    "power_motion":  50,
+    "compute_electronics": 50,
+    "energy":        40,
 }
 
 

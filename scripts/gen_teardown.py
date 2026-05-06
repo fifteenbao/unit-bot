@@ -78,7 +78,7 @@ from core.bom_rules import (  # noqa: E402
     is_aux,
 )
 from core.components_lib import load_lib  # noqa: E402
-from core.auxiliary_parts import estimate_auxiliary_cost, AUX_DFMA_IMPACT  # noqa: E402
+from core.auxiliary_parts import estimate_auxiliary_cost, get_bucket_default_price, AUX_DFMA_IMPACT  # noqa: E402
 
 # ── BOM 7桶 (从 core/bom_8bucket_framework.json 动态加载) ───────
 BUCKETS = buckets_ordered()                      # [(key, name_cn), ...]
@@ -1344,6 +1344,17 @@ def stage4_aggregate_audit(
     # DFA Score (100 分制, 扣掉辅助件装配复杂度惩罚)
     dfa_score = max(0, round(100 - dfa_score_penalty, 1))
 
+    # ── 桶兜底价保底 ──────────────────────────────────────────────
+    # 当某桶零件大量走兜底价时，用最小成本下限兜底，避免严重低估
+    floor_alerts: list[str] = []
+    for bkt, _ in BUCKETS:
+        floor_info = get_bucket_default_price(bkt, bucket_counts[bkt])
+        if bucket_totals[bkt] < floor_info["final_floor_cost"]:
+            bucket_totals[bkt] = floor_info["final_floor_cost"]
+            if floor_info["warning"]:
+                floor_alerts.append(f"{BUCKET_MAP[bkt]}：{floor_info['warning']}")
+    grand = sum(bucket_totals.values())  # recalc after floor
+
     tolerance = bucket_pct_tolerance()  # 来自 framework validation_rules
     ratio_lo, ratio_hi = expected_bom_msrp_ratio()
 
@@ -1381,6 +1392,8 @@ def stage4_aggregate_audit(
             "pct": round(pct, 1), "target_pct": round(target_pct, 1),
             "count": bucket_counts[bkt], "status": status,
         }
+
+    bias_alerts.extend(floor_alerts)
 
     grand_with_aux = grand + aux_grand
 
