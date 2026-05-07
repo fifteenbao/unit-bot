@@ -15,14 +15,19 @@
       {
         "level": 1,
         "name": "一级·成本大类",
-        "description": "整机全成本顶层分类,7桶全部属于硬件物料",
+        "description": "整机全成本顶层分类。硬件物料（含人工折旧）= 制造成本；其余三项为费用类。",
+        "t80s_total_cost_cny": 3275,
+        "t80s_msrp_cny": 3999,
+        "t80s_gross_margin_pct": 0.18,
         "categories": [
           {
             "name": "硬件物料",
             "pct_lo": 0.40,
             "pct_hi": 0.55,
             "components": "原材料、电子元器件、辅料",
-            "note": "7桶框架覆盖此类全部内容；科沃斯T80S实测约42.5%（¥1700/¥3999）；旗舰机含大基站时偏上限",
+            "t80s_actual_cny": 1700,
+            "t80s_actual_pct": 0.52,
+            "note": "科沃斯T80S实测约¥1700（含人工水电折旧）；二级6项：清洁¥500+传感¥400+基站¥275+结构¥200+PCBA¥175+电池¥50≈¥1600，+人工折旧¥100≈¥1700",
             "source": "开源证券·科沃斯T80S拆解（2024）"
           },
           {
@@ -30,15 +35,19 @@
             "pct_lo": 0.06,
             "pct_hi": 0.12,
             "components": "组装/焊接/质检工时、水电能源、设备折旧",
-            "note": "科沃斯T80S实测约7.5%（¥300/¥3999）；高自动化产线折旧占比上升",
+            "t80s_actual_cny": 300,
+            "t80s_actual_pct": 0.09,
+            "note": "科沃斯T80S实测约¥300；图3一级单独列示（与硬件物料并列），含组装人工+QA检测+产线折旧；三项子成本详见 cost_formula",
             "source": "开源证券·科沃斯T80S拆解（2024）"
           },
           {
-            "name": "销售+管理费用",
+            "name": "销售费用+管理费用",
             "pct_lo": 0.20,
             "pct_hi": 0.35,
             "components": "品牌推广、渠道费用、管理人员薪资、税费",
-            "note": "科沃斯T80S实测约25%（¥1000+/¥3999）；线上渠道佣金约5-8%，品牌投放占大头；高于行业传统估算，旗舰期间偏上限",
+            "t80s_actual_cny": 1000,
+            "t80s_actual_pct": 0.31,
+            "note": "科沃斯T80S实测¥1000+（31%），占比最高；含渠道佣金5-8%、营销投放、运输等；旗舰机偏上限",
             "source": "开源证券·科沃斯T80S拆解（2024）"
           },
           {
@@ -46,7 +55,9 @@
             "pct_lo": 0.03,
             "pct_hi": 0.08,
             "components": "硬件/软件研发人员、研发样机、认证检测、算法升级",
-            "note": "科沃斯T80S实测约4.4%（¥175/¥3999）；头部品牌依赖规模效应均摊，销量越大单台均摊越低",
+            "t80s_actual_cny": 175,
+            "t80s_actual_pct": 0.05,
+            "note": "科沃斯T80S实测约¥150-200（5%）；头部品牌依赖规模效应均摊，销量越大单台均摊越低",
             "source": "开源证券·科沃斯T80S拆解（2024）"
           },
           {
@@ -54,25 +65,72 @@
             "pct_lo": 0.06,
             "pct_hi": 0.12,
             "components": "仓库租赁、物流配送、售后物流、库存损耗",
-            "note": "科沃斯T80S实测约7.5%（¥300+/¥3999）；大件家电物流成本较高；跨境销售偏上限",
+            "t80s_actual_cny": 300,
+            "t80s_actual_pct": 0.09,
+            "note": "科沃斯T80S实测约¥300+（9%）；大件家电物流成本较高；跨境销售偏上限",
             "source": "开源证券·科沃斯T80S拆解（2024）"
           }
         ]
       },
       {
         "level": 2,
-        "name": "二级·7桶",
-        "description": "BOM硬件成本分析核心框架"
+        "name": "二级·硬件物料分项",
+        "description": "硬件物料的6个子项（图3二级项目），全部属于7桶框架内。",
+        "t80s_items": [
+          {"name": "清洁模块",    "bom_bucket": "cleaning",             "t80s_cny": 500,  "t80s_note": "¥500+"},
+          {"name": "传感器及导航", "bom_bucket": "perception",           "t80s_cny": 400,  "t80s_note": "¥400+"},
+          {"name": "全能基站",    "bom_bucket": "dock_station",         "t80s_cny": 275,  "t80s_note": "¥250-300"},
+          {"name": "PCBA+主控芯片","bom_bucket": "compute_electronics",  "t80s_cny": 175,  "t80s_note": "¥150-200"},
+          {"name": "电池组",      "bom_bucket": "energy",               "t80s_cny": 50,   "t80s_note": "约¥50"},
+          {"name": "结构及壳料件", "bom_bucket": "structure_cmf",        "t80s_cny": 200,  "t80s_note": "约¥200"}
+        ]
       },
       {
         "level": 3,
         "name": "三级·功能模块",
-        "description": "每桶下的功能子系统,按物理拆机组织"
+        "description": "每个二级子项下的功能系统（图3三级项目），按物理拆机组织。",
+        "t80s_items": {
+          "清洁模块": ["恒压活水洗地系统", "高密度滚刷", "活水循环系统", "吸尘电机", "水箱、水泵及精密机械结构"],
+          "传感器及导航": ["激光雷达", "3D结构光模组", "视觉摄像头", "惯性测量模块", "接近传感器", "AI加速器", "主控芯片"]
+        }
       },
       {
         "level": 4,
         "name": "四级·组件",
-        "description": "最小可计价单元,对应BOM单行"
+        "description": "最小可计价单元，对应BOM单行（图3四级项目）。",
+        "t80s_items": {
+          "恒压活水洗地系统": [
+            {"part": "动态压力调节系统", "sourcing": "外采"},
+            {"part": "电机（拖布驱动）", "sourcing": "自产"}
+          ],
+          "高密度滚刷": [
+            {"part": "滚刷",   "sourcing": "-"},
+            {"part": "尼龙纤维", "sourcing": "外采"}
+          ],
+          "活水循环系统": [
+            {"part": "喷淋系统",  "sourcing": "外采"},
+            {"part": "流量传感器", "sourcing": "外采"},
+            {"part": "加热系统",  "sourcing": "-"}
+          ],
+          "吸尘电机": [
+            {"part": "吸尘电机", "sourcing": "外采"}
+          ],
+          "水箱、水泵及精密机械结构": [
+            {"part": "电控阀",   "sourcing": "外采"},
+            {"part": "液位传感器", "sourcing": "外采"},
+            {"part": "污水刮条",  "sourcing": "外采"},
+            {"part": "污水箱",   "sourcing": "外采"}
+          ],
+          "激光雷达": [
+            {"part": "激光雷达整机", "sourcing": "自产（传感器及激光发射器外采）"}
+          ],
+          "3D结构光模组": [{"part": "3D结构光模组", "sourcing": "外采"}],
+          "视觉摄像头":   [{"part": "视觉摄像头",   "sourcing": "外采"}],
+          "惯性测量模块": [{"part": "惯性测量模块",  "sourcing": "外采"}],
+          "接近传感器":   [{"part": "接近传感器",    "sourcing": "外采"}],
+          "AI加速器":    [{"part": "AI加速器",      "sourcing": "外采"}],
+          "主控芯片":    [{"part": "主控芯片",       "sourcing": "外采"}]
+        }
       }
     ],
     "level1_categories": {
@@ -89,21 +147,58 @@
         ],
         "pct_of_total_cost": "约 40-55%",
         "pct_of_manufacturing": "约 80-87%",
-        "note": "★ 唯一高度可变的成本项，随功能模块差异价格相差较大。其余4项单台成本相对固定。科沃斯T80S实测约42.5%（¥1700/¥3999）。",
+        "note": "★ 唯一高度可变的成本项，随功能模块差异价格相差较大。其余4项单台成本相对固定。科沃斯T80S实测约¥1700（图3一级项目，含人工折旧；二级6项：清洁¥500+传感¥400+基站¥275+结构¥200+PCBA¥175+电池¥50≈¥1600）。",
         "reference_cost": {
           "entry": 550,
           "mid": 1000,
-          "flagship": 1750
+          "flagship": 1700,
+          "flagship_note": "T80S实测 ¥1700（开源证券·2024，图3一级项目）"
         }
       },
       "人工+机器折旧": {
         "description": "组装产线人工、SMT贴片机时、注塑机台折旧、检测设备摊销。不在7桶框架内。",
         "pct_of_total_cost": "约 6-12%",
-        "note": "科沃斯T80S实测约7.5%（¥300/¥3999）；覆盖: 组装人工+外协、QA出厂检测 (原第8桶子项); 单台成本相对固定",
+        "note": "科沃斯T80S实测约¥300（9%）；覆盖: 组装人工+外协、QA出厂检测 (原第8桶子项); 单台成本相对固定",
+        "cost_formula": {
+          "人工费": {
+            "formula": "工序数 × 单工序工时(min) × 人均工资(元/min) × 人数",
+            "params": {
+              "工序数": "主机组装约12道, 含基站约18道",
+              "单工序工时_min": "自动化产线 0.5-1.5 min/道; 半手工 2-4 min/道",
+              "人均工资_元/min": "华南工厂约 0.10-0.15 元/min（月薪6000-9000元/22天/8h）",
+              "人数": "主线 2-4人, 检测线 1-2人"
+            },
+            "typical_range_cny": "单台人工 60-180 元",
+            "note": "旗舰机工序多+基站装配, 偏上限; 高度自动化产线可降至 30-50 元"
+          },
+          "水电费": {
+            "formula": "设备总功率(kW) × 工作系数 × 单台机时(h) × 电价(元/kWh)",
+            "params": {
+              "设备总功率_kW": "SMT产线约 80-150 kW; 注塑机单台 50-200 kW",
+              "工作系数": "0.6-0.8（非满载）",
+              "单台机时_h": "SMT贴片约 0.05-0.1 h/台; 注塑成型约 0.02-0.05 h/件",
+              "电价_元/kWh": "华南工业电价约 0.8-1.0 元/kWh"
+            },
+            "typical_range_cny": "单台水电 10-30 元",
+            "note": "注塑和SMT是主要耗电工序; 基站模具件多, 偏上限"
+          },
+          "设备折旧": {
+            "formula": "(固定资产原值 - 残值) ÷ 使用年限(年) ÷ 年产能(台)",
+            "params": {
+              "固定资产原值_万元": "SMT产线 500-2000 万/条; 注塑机 50-300 万/台; 检测设备 100-500 万/套",
+              "残值率": "5-10%",
+              "使用年限_年": "SMT 8-10年; 注塑机 10-15年; 检测设备 5-8年",
+              "年产能_台": "单条SMT产线年产 50-200 万台（按排班）"
+            },
+            "typical_range_cny": "单台折旧摊销 30-120 元",
+            "note": "产能利用率越高单台折旧越低; 新建产线初期折旧高"
+          }
+        },
         "reference_cost": {
           "entry": 115,
           "mid": 200,
-          "flagship": 325
+          "flagship": 300,
+          "flagship_note": "T80S实测 ¥300（开源证券·2024，图3一级项目，与硬件物料并列）"
         }
       },
       "销售+管理费用": {
@@ -113,7 +208,8 @@
         "reference_cost": {
           "entry": 275,
           "mid": 600,
-          "flagship": 1150
+          "flagship": 1000,
+          "flagship_note": "T80S实测 ¥1000+（开源证券·2024）"
         }
       },
       "研发均摊": {
@@ -123,7 +219,8 @@
         "reference_cost": {
           "entry": 55,
           "mid": 115,
-          "flagship": 175
+          "flagship": 175,
+          "flagship_note": "T80S实测 ¥150-200（开源证券·2024）"
         }
       },
       "仓储物流售后": {
@@ -133,7 +230,8 @@
         "reference_cost": {
           "entry": 105,
           "mid": 200,
-          "flagship": 325
+          "flagship": 300,
+          "flagship_note": "T80S实测 ¥300+（开源证券·2024）"
         }
       }
     },
@@ -505,21 +603,52 @@
       "typical_items": [
         {
           "name": "激光雷达 (LDS)",
-          "example_spec": "2D 三角测距 或 单线 ToF 360°",
+          "example_spec": "2D 三角测距 或 单线 ToF 360°；传感器及激光发射器外采，整机自产",
           "default_qty": 1,
-          "section": "核心导航"
+          "section": "核心导航",
+          "t80s_sourcing": "自产（传感器及激光发射器外采）"
+        },
+        {
+          "name": "3D 结构光模组",
+          "example_spec": "散斑投影+红外摄像头, 前视 3D 感知",
+          "default_qty": 1,
+          "section": "核心导航",
+          "t80s_sourcing": "外采"
         },
         {
           "name": "前视 ToF / dToF 模块",
-          "example_spec": "单点/线阵/面阵 ToF",
+          "example_spec": "单点/线阵/面阵 ToF, 补盲近距离",
           "default_qty": 1,
-          "section": "核心导航"
+          "section": "核心导航",
+          "t80s_sourcing": "外采"
+        },
+        {
+          "name": "视觉摄像头 (RGB)",
+          "example_spec": "RGB 摄像头, 物体识别/语义避障",
+          "default_qty": 1,
+          "section": "前视避障",
+          "t80s_sourcing": "外采"
+        },
+        {
+          "name": "AI 加速器 (NPU/VPU)",
+          "example_spec": "端侧推理加速, 物体识别/SLAM增强",
+          "default_qty": 1,
+          "section": "前视避障",
+          "t80s_sourcing": "外采"
         },
         {
           "name": "前视线激光 + RGB",
-          "example_spec": "单/双线激光+RGB 模组避障",
+          "example_spec": "单/双线激光+RGB 模组避障 (部分机型)",
           "default_qty": 1,
-          "section": "前视避障"
+          "section": "前视避障",
+          "condition": "!nav_ai"
+        },
+        {
+          "name": "接近传感器",
+          "example_spec": "红外/电容式, 障碍物近距检测",
+          "default_qty": 1,
+          "section": "沿边感知",
+          "t80s_sourcing": "外采"
         },
         {
           "name": "沿墙线激光",
@@ -537,7 +666,8 @@
           "name": "IMU 6 轴",
           "example_spec": "加速度计+陀螺仪",
           "default_qty": 1,
-          "section": "位姿与安全"
+          "section": "位姿与安全",
+          "t80s_sourcing": "外采"
         },
         {
           "name": "地检/下视组件",
@@ -564,9 +694,15 @@
           "section": "语音交互"
         }
       ],
+      "t80s_cost_breakdown": {
+        "total_cny": 400,
+        "note": "T80S实测传感器及导航 ¥400+；激光雷达自产（传感器/发射器外采），3D结构光/视觉/IMU/接近传感器/AI加速器/主控芯片均外采",
+        "source": "开源证券·科沃斯T80S拆解（2024）"
+      },
       "boundary_notes": [
         "雷达/ToF 若 BOM 中是委外整组件, 可能未独立展开, 需按供应商报价补足",
         "LDS 装饰片/硅胶套归 structure_cmf, 不在本桶",
+        "AI 加速器/NPU 若集成在 SoC 内则归 compute_electronics",
         "低端机型可能仅用陀螺仪+碰撞, 无雷达, 此桶占比会降至 5% 以下",
         "麦克风阵列/AI 语音处理属感知进阶项, 低端机型常缺失"
       ]
@@ -664,34 +800,65 @@
           "example_spec": "圆盘×2, 涤纶/超纤, 直径约 80-90mm",
           "default_qty": 2,
           "mutex_group": "mop_form",
-          "section": "恒压活水洗地"
+          "section": "恒压活水洗地",
+          "t80s_sourcing": null
         },
         {
           "name": "滚筒拖布",
           "example_spec": "短滚筒, 整机 1 根",
           "default_qty": 1,
           "mutex_group": "mop_form",
-          "section": "恒压活水洗地"
+          "section": "恒压活水洗地",
+          "t80s_sourcing": null
         },
         {
           "name": "履带拖布",
           "example_spec": "宽幅履带式整环, 整机 1 件",
           "default_qty": 1,
           "mutex_group": "mop_form",
-          "section": "恒压活水洗地"
+          "section": "恒压活水洗地",
+          "t80s_sourcing": null
+        },
+        {
+          "name": "履带拖布驱动电机",
+          "example_spec": "BLDC+减速箱, 驱动清洁履带, 整机×2",
+          "default_qty": 2,
+          "section": "恒压活水洗地",
+          "condition": "track_drive",
+          "t80s_sourcing": "外采"
+        },
+        {
+          "name": "动态压力调节系统",
+          "example_spec": "恒压活水洗地核心机构, 含压力传感+调节机构",
+          "default_qty": 1,
+          "section": "恒压活水洗地",
+          "t80s_sourcing": "外采"
+        },
+        {
+          "name": "拖布驱动电机",
+          "example_spec": "驱动拖布旋转/往复; 双转盘/滚筒机型适用",
+          "default_qty": 1,
+          "section": "恒压活水洗地",
+          "condition": "!track_drive",
+          "t80s_sourcing": "自产"
         },
         {
           "name": "拖布支架 / 机械臂",
           "example_spec": "抬升+伸缩+安装检测 (进阶项)",
           "default_qty": 1,
           "section": "恒压活水洗地",
-          "condition": "mop_lift|mop_extend"
+          "condition": "mop_lift|mop_extend",
+          "t80s_sourcing": "外采"
         },
         {
           "name": "滚刷组件 (浮动中扫)",
-          "example_spec": "滚刷本体+电机+盖板+浮动机构",
+          "example_spec": "滚刷本体 (尼龙纤维)+电机+盖板+浮动机构",
           "default_qty": 1,
-          "section": "高密度滚刷"
+          "section": "高密度滚刷",
+          "t80s_level4": [
+            {"part": "滚刷本体", "material": "尼龙纤维", "sourcing": "外采"},
+            {"part": "滚刷电机+浮动机构", "sourcing": "外采"}
+          ]
         },
         {
           "name": "边扫组件",
@@ -700,39 +867,85 @@
           "section": "高密度滚刷"
         },
         {
-          "name": "主机清水盒组件",
-          "example_spec": "含进水阀+软管+水位检测",
+          "name": "喷淋系统",
+          "example_spec": "雾化喷嘴+管路; 活水洗地核心",
           "default_qty": 1,
-          "section": "活水循环"
+          "section": "活水循环",
+          "t80s_sourcing": "外采"
+        },
+        {
+          "name": "流量传感器",
+          "example_spec": "检测水流量, 用于恒压控制闭环",
+          "default_qty": 1,
+          "section": "活水循环",
+          "t80s_sourcing": "外采"
+        },
+        {
+          "name": "加热系统 (主机)",
+          "example_spec": "主机端热水模组 (部分机型)",
+          "default_qty": 1,
+          "section": "活水循环",
+          "condition": "hot_wash",
+          "t80s_sourcing": null
+        },
+        {
+          "name": "主机清水盒组件",
+          "example_spec": "含进水阀+液位传感器+软管",
+          "default_qty": 1,
+          "section": "水箱水泵及精密机械结构",
+          "t80s_level4": [
+            {"part": "电控阀 (进水阀)", "sourcing": "外采"},
+            {"part": "液位传感器", "sourcing": "外采"}
+          ]
         },
         {
           "name": "主机污水盒组件",
-          "example_spec": "含吸气支架+污水槽+密封",
+          "example_spec": "含污水槽+污水刮条+密封",
           "default_qty": 1,
-          "section": "活水循环"
+          "section": "水箱水泵及精密机械结构",
+          "t80s_level4": [
+            {"part": "污水刮条", "sourcing": "外采"},
+            {"part": "污水箱", "sourcing": "外采"}
+          ]
         },
         {
           "name": "注清水泵 / 清水泵",
-          "example_spec": "5V 小流量",
+          "example_spec": "5V 小流量微型泵",
           "default_qty": 1,
-          "section": "活水循环"
+          "section": "水箱水泵及精密机械结构",
+          "t80s_sourcing": "外采"
         },
         {
           "name": "电磁阀 (主机)",
-          "example_spec": "小流量阀体",
+          "example_spec": "小流量阀体, 控制水路开关",
           "default_qty": 1,
-          "section": "活水循环"
+          "section": "水箱水泵及精密机械结构",
+          "t80s_sourcing": "外采"
+        },
+        {
+          "name": "吸尘电机",
+          "example_spec": "主机吸尘风道电机 (归 power_motion 桶，此处仅标注T80S归属)",
+          "default_qty": 1,
+          "section": "吸尘系统",
+          "t80s_sourcing": "外采",
+          "boundary_note": "归 power_motion 桶，不计入 cleaning 成本"
         },
         {
           "name": "主机尘盒组件",
           "example_spec": "含滤网+按钮+密封",
           "default_qty": 1,
-          "section": "精密机械结构"
+          "section": "水箱水泵及精密机械结构"
         }
       ],
+      "t80s_cost_breakdown": {
+        "total_cny": 500,
+        "note": "T80S实测清洁模块 ¥500+，含恒压活水洗地+高密度滚刷+吸尘电机+水箱水泵+精密机械结构",
+        "source": "开源证券·科沃斯T80S拆解（2024）"
+      },
       "boundary_notes": [
         "基站端的清洗盘/污水桶归 dock_station",
         "纯扫款 (无拖地) 无拖布/清水/污水盒, 此桶约减 40-60%",
+        "吸尘电机本体归 power_motion, 不计入 cleaning",
         "集尘风机本体归 dock_station, 主机风机归 power_motion"
       ]
     },

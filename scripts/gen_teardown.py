@@ -1467,10 +1467,17 @@ def stage4_aggregate_audit(
     # 聚合件: 同一 (bucket, hint) 只计一次, 下级重复行记录但 line_cost=0
     counted_aggregates: set[tuple[str, str]] = set()
 
+
+    track_drive = (features or {}).get("track_drive", False)
+
     for r in rows:
         bkt = (r.get("bom_bucket") or "").strip()
         if bkt not in bucket_totals:
             continue
+
+        # 履带机型的拖布支架 → 指向履带专用 lib 条目（比双转盘贵约2x）
+        if track_drive and r.get("_lib_hint") == "拖布支架":
+            r["_lib_hint"] = "履带拖布机械臂"
 
         # 聚合件: 整机只计一次 (复用 analyze_c33 的聚合思想)
         note = r.get("_agg_note", "")
@@ -1711,19 +1718,46 @@ def stage4_aggregate_audit(
     # ── 一级成本结构 (5大类, BOM实测 + 固定参考成本) ────────────
     l1_costs = estimate_level1_costs(grand_with_aux, msrp or 0)
     if l1_costs:
+        meta = l1_costs.get("整机全成本 (估算)", {})
         segment_label = {"entry": "入门", "mid": "中档", "flagship": "旗舰"}.get(
-            l1_costs.get("整机全成本 (估算)", {}).get("segment", ""), "")
-        print(f"\n  [一级成本结构] 整机全成本估算 ({segment_label}档 固定参考)")
-        print(f"  {'一级项目':20s} {'估计成本(¥)':>12s}  {'占比':>7s}  来源")
-        print(f"  {'-'*68}")
+            meta.get("segment", ""), "")
+        l1_total = meta.get("cost", 0)
+        cogs     = meta.get("cogs", 0)
+        opex     = meta.get("opex", 0)
+
+        COGS_ITEMS = {"硬件物料 (7桶)", "人工+机器折旧", "仓储物流售后"}
+        OPEX_ITEMS = {"销售+管理费用", "研发均摊"}
+
+        print(f"\n  [成本结构] {segment_label} 固定参考")
+        print(f"  {'项目':20s} {'金额(¥)':>10s}  {'占MSRP':>7s}  来源")
+        print(f"  {'-'*60}")
+
+        print(f"  {'── 营业成本 COGS':}")
         for name, info in l1_costs.items():
-            is_summary = "全成本" in name
-            prefix = "  " if not is_summary else "\n  "
-            note = f"  ← {info.get('note', '')}" if info.get('note') and not is_summary else ""
-            print(f"{prefix}{name:20s} {info['cost']:>12.0f}  {info['pct']:>6.1f}%  "
-                  f"{info['source']}{note}")
-        l1_total = l1_costs.get("整机全成本 (估算)", {}).get("cost", 0)
-        print(f"\n  💡 非硬件成本(人工/物流/销售/研发)单台相对固定,硬件物料是唯一随功能配置波动的变量。")
+            if name not in COGS_ITEMS:
+                continue
+            pct_msrp = info['cost'] / msrp * 100 if msrp else 0
+            note = "  ★ 随配置波动" if "硬件" in name else ""
+            print(f"  {name:20s} {info['cost']:>10.0f}  {pct_msrp:>6.1f}%  {info['source']}{note}")
+        pct_cogs = cogs / msrp * 100 if msrp else 0
+        print(f"  {'  COGS 小计':20s} {cogs:>10.0f}  {pct_cogs:>6.1f}%")
+
+        print(f"  {'── 期间费用 OpEx':}")
+        for name, info in l1_costs.items():
+            if name not in OPEX_ITEMS:
+                continue
+            pct_msrp = info['cost'] / msrp * 100 if msrp else 0
+            print(f"  {name:20s} {info['cost']:>10.0f}  {pct_msrp:>6.1f}%  {info['source']}")
+        pct_opex = opex / msrp * 100 if msrp else 0
+        print(f"  {'  期间费用小计':20s} {opex:>10.0f}  {pct_opex:>6.1f}%")
+
+        if msrp:
+            gross_margin = (msrp - cogs) / msrp * 100
+            net_margin   = (msrp - l1_total) / msrp * 100
+            print(f"  {'-'*60}")
+            print(f"  {'MSRP':20s} {msrp:>10.0f}")
+            print(f"  {'毛利润 (MSRP-COGS)':20s} {msrp-cogs:>10.0f}  {gross_margin:>6.1f}%")
+            print(f"  {'净利润 (扣期间费用)':20s} {msrp-l1_total:>10.0f}  {net_margin:>6.1f}%")
     else:
         l1_total = 0
 

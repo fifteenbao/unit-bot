@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -75,8 +76,8 @@ def detect_product_features(specs: dict | None, notes: str = "") -> dict[str, bo
         "lift_radar": "升降雷达" in n or "雷达升降" in n,
         # 拖布延边 / 机械臂 (从 notes 检测)
         "mop_extend": any(k in n for k in ("延边", "机械臂", "伸缩拖布")),
-        # 履带驱动 (从 notes 检测)
-        "track_drive": "履带" in n,
+        # 履带驱动 (从 notes 或 drive_wheel_type spec 检测)
+        "track_drive": "履带" in n or "track" in s.get("drive_wheel_type", "").lower(),
         # 越障底盘升降 (从 notes 或 specs 检测)
         "obstacle_lift": "越障" in n or (s.get("obstacle_height_cm") or 0) >= 4,
         # 导航类型
@@ -349,11 +350,18 @@ def estimate_level1_costs(hardware_bom_cny: float, msrp: float = 0) -> dict:
             "note": "单台成本相对固定，不随 BOM 波动",
         }
 
+    # COGS = 硬件物料 + 人工+机器折旧 + 仓储物流售后 (直接成本)
+    cogs = hardware_bom_cny + fixed_costs.get("人工+机器折旧", 0) + fixed_costs.get("仓储物流售后", 0)
+    # 期间费用 = 销售+管理费用 + 研发均摊
+    opex = fixed_costs.get("销售+管理费用", 0) + fixed_costs.get("研发均摊", 0)
+
     result["整机全成本 (估算)"] = {
         "cost": round(total_estimated, 0),
         "pct": 100.0,
         "source": "",
         "segment": segment,
+        "cogs": round(cogs, 0),
+        "opex": round(opex, 0),
     }
 
     return result
