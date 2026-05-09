@@ -1,185 +1,143 @@
 # unit-bot
 
-扫地机器人 BOM 成本分析平台，支持竞品拆机成本核算、降本优化建议、供应链分析。
+> **扫地机器人 PLANS 价值设计平台** — 12 个独立子 agent，串成一条从竞品研究到体系建设的极致降本工作流。
+
+```
+P 现状研究  →  L 精益设计  →  A 先进裁剪  →  N 价值创新  →  S 体系建设
+3 agent       2 agent (DFMA)  2 agent (TRIZ)  3 agent       2 agent
+```
+
+方法论原文：[价值设计流程PLANS.md](价值设计流程PLANS.md) · 架构设计：[docs/agents_architecture.md](docs/agents_architecture.md)
 
 ---
 
 ## 快速开始
 
-### 1. 安装
-
 ```bash
-git clone https://github.com/fifteenbao/unit-bot
-cd unit-bot
+git clone https://github.com/fifteenbao/unit-bot && cd unit-bot
 pip install -r requirements.txt
-```
 
-配置 API Key（三选一，优先级从高到低）：
+# 配置 API Key
+export DEEPSEEK_API_KEY=sk-xxx
 
-```bash
-export AIHUBMIX_API_KEY=sk-xxx    # 推荐：带服务端 web_search
-export DEEPSEEK_API_KEY=sk-xxx    # 备选：客户端 DuckDuckGo 搜索
-export ANTHROPIC_API_KEY=sk-xxx   # 兜底：需能直连 Anthropic
-```
-
-启动：
-
-```bash
 python agent.py
 ```
 
-### 2. 接入 OpenClaw（免配置 API Key）
+或接入 OpenClaw（免配 key）：
 
 ```bash
 openclaw skills add https://github.com/fifteenbao/unit-bot
 ```
 
-> OpenClaw 在运行时自动注入 `OPENCLAW_API_KEY`，无需额外配置。
-
 ---
 
-## 命令
+## 命令一览
 
-### 核心工作流
+> 命令统一接受 `<品牌> <型号>` 格式（如 `石头 G30 Pro`、`追觅 X50 Ultra`）。
 
-分析一款新机型，按顺序执行：
+### PLANS 12 子 agent — 每个 agent 单一职责
+
+| 阶段 | 命令 | Agent 角色 | 上游依赖 |
+|------|------|-----------|---------|
+| **P** 现状研究 | `/research <品牌> <型号>` | 产品研究员 | — |
+| | `/teardown <品牌> <型号>` | 拆解分析师 | — |
+| | `/issues <品牌> <型号>` | 问题诊断师 | — |
+| **L** 精益设计 | `/dfa <品牌> <型号>` | DFA 优化师 | `/teardown` + `/issues` |
+| | `/dfm <品牌> <型号>` | DFM 优化师（含 Should Cost） | `/teardown` |
+| **A** 先进裁剪 | `/function <品牌> <型号>` | 功能建模师（TRIZ） | `/dfa` + `/dfm` |
+| | `/trim <品牌> <型号>` | 裁剪策略师（TRIZ 矛盾） | `/function` |
+| **N** 价值创新 | `/fos <品牌> <型号>` | 功能创新搜索师 | `/trim` |
+| | `/patent <品牌> <型号>` | 专利规避师 ⚠️非法律意见 | `/fos` |
+| | `/trend <品牌> <型号>` | 趋势分析师（S 曲线） | — |
+| **S** 体系建设 | `/platform <品牌> <型号>` | 平台架构师 | `/trim` + `/fos` |
+| | `/costsystem <品牌> <型号>` | 成本体系构建师 | `/trim` + `/fos` |
+
+每个 agent 产出 `data/plans/{品牌型号}/{stage_key}.md` 报告。详细职责见 [agents/README.md](agents/README.md)。
+
+### 编排器
 
 ```
-/product 石头 G30S Pro      ← 第一步：采集规格，写入产品库
-/bom     石头 G30S Pro      ← 第二步：生成 7 桶成本报告
-/dfma    石头 G30S Pro      ← 第三步：输出降本建议
+/plans <品牌> <型号>              # 串行跑全 12 阶段（按依赖顺序）+ overview.md
+/plans status <品牌> <型号>       # 查 12 阶段进度
+/plans overview <品牌> <型号>     # 重新拼 overview.md（不重跑）
 ```
 
-| 命令 | 做什么 | 不做什么 |
-|------|--------|---------|
-| `/product <品牌> <型号>` | 多源采集 30+ 规格参数，写入产品库 | 不做成本分析 |
-| `/bom <品牌> <型号>` | 7 桶成本报告 + 整机成本结构 + 供应链风险 | 不给降本建议 |
-| `/dfma <品牌> <型号>` | 功能-成本矩阵 + DFMA 设计抓手 + 降本潜力 | 需先跑过 `/bom` |
-| `/fcc find <品牌> <型号>` | 查找 FCC 文档链接（不下载） | — |
-| `/fcc ocr <品牌> <型号>` | 下载 FCC PDF + OCR 识别 PCB 芯片丝印 | — |
+### 数据采集
 
-> **`/fcc` 是可选步骤**。有 FCC 数据时 `/bom` 的 Stage 0 会自动加载，芯片识别更准确；没有也能正常运行。
+底层数据采集工具（`generate_teardown_csv` / `vs_compare` / `find_parts` / `export_framework` 等）**已合并到 12 个子 agent 的工具白名单**——子 agent 在执行任务时自主调用，用户不需要手动跑。
 
-### 辅助命令
-
-| 命令 | 用途 |
-|------|------|
-| `/cut <品牌> <型号>` | 识别溢价件，给出件级替代方案（与 `/dfma` 互补） |
-| `/vs <A> vs <B> [--bucket <桶>]` | 两机型 7 桶并排对标，或指定子系统逐项对比 |
-| `/find <关键词\|桶名>` | 搜索 teardown 档案和标准件库 |
-| `/framework` | 导出 7 桶对账 CSV（填价用，不入 git） |
-
-### 等价脚本（批量 / 自动化场景）
+**唯一需要用户手动跑的**：FCC 文档检索 + 芯片 OCR（涉及文件下载和视觉识别，不在 agent 工具集里）。
 
 ```bash
-# 批量导入产品规格
-python scripts/import_products.py data/products/products.csv
-
-# 生成拆机 BOM（可指定零售价，或复用已有 CSV 跳过网络调研）
-python scripts/gen_teardown.py "石头G30S Pro"
-python scripts/gen_teardown.py "石头G30S Pro" --msrp 5999
-python scripts/gen_teardown.py --csv data/teardowns/xxx.csv "xxx"
-
-# FCC 文档采集
-python scripts/fetch_fcc.py find "石头G30S Pro"
-python scripts/fetch_fcc.py ocr  "石头G30S Pro"
-
-# 分析制造 BOM（金蝶/SAP 导出格式）
-python scripts/cost_mfg_bom.py data/bom/xxx.csv --msrp 2999
+python scripts/fetch_fcc.py find "石头 G30S Pro"   # 查 FCC 文档链接
+python scripts/fetch_fcc.py ocr  "石头 G30S Pro"   # 下载 PDF + OCR PCB 芯片
 ```
 
----
+跑完后 `/teardown` 子 agent 会自动读取 `data/teardowns/fcc/{slug}/` 下的结果。
 
-## 成本框架
+### 批量 / CI 场景的等价脚本
 
-### 整机成本 4 级分解
-
-`/bom` 的输出按以下层级组织，从宏观到零件逐层展开：
-
-| 层级 | 内容 |
-|------|------|
-| **一级：成本大类** | 硬件物料 · 人工+机器折旧 · 销售+管理费用 · 研发均摊 · 仓储物流售后 |
-| **二级：7 桶** | 算力与电子 / 感知系统 / 动力与驱动 / 清洁功能 / 基站系统 / 能源系统 / 整机结构CMF |
-| **三级：功能模块** | 每桶下的物理子系统（导航模组、清洁组件、驱动系统等） |
-| **四级：组件** | 最小可计价单元，对应 BOM 一行（单颗芯片、单个电机、单张 PCB） |
-
-### 一级成本占比参考
-
-> 来源：开源证券·科沃斯 T80S 拆解（2024）
-
-| 大类 | 行业区间 | T80S 实测 |
-|------|---------|----------|
-| 硬件物料（7 桶） | 40–55% | 约 42.5% |
-| 人工+机器折旧 | 6–12% | 约 7.5% |
-| 销售+管理费用 | 20–35% | 约 25% |
-| 研发均摊 | 3–8% | 约 4.4% |
-| 仓储物流售后 | 6–12% | 约 7.5% |
-
-### 7 桶基准占比
-
-> T80S 实测校准，含基站全配置机型偏上限
-
-| 桶 | 基准占比 |
-|----|---------|
-| 算力与电子 | ~13% |
-| 感知系统 | ~16% |
-| 动力与驱动 | ~11% |
-| 清洁功能 | ~20% |
-| 基站系统 | ~24% |
-| 能源系统 | ~7% |
-| 整机结构CMF | ~13% |
+```bash
+python scripts/import_products.py data/products/products.csv      # 批量导入产品规格
+python scripts/gen_teardown.py "石头 G30S Pro" --msrp 5999         # 等价于 /teardown 内部产物
+python scripts/cost_mfg_bom.py data/bom/xxx.csv --msrp 2999        # 制造 BOM (金蝶/SAP 格式)
+python scripts/build_components.py                                 # FCC OCR 结果入标准件库
+```
 
 ---
 
 ## 数据架构
 
-系统维护 5 类数据，各自回答不同层面的问题：
+系统维护 9 个数据库，分工明确：
 
-| 数据库 | 文件 | 回答什么问题 |
-|--------|------|------------|
-| ① 产品规格库 | `data/products/products_db.json` | 这台机器**是什么** |
-| ② 拆机档案 | `data/teardowns/{slug}_{date}_teardown.csv` | 这台机器**用了什么件** |
-| ③ 标准件库 | `data/lib/components_lib.csv` | 这类件**值多少钱** |
-| ④ 材料库 | `data/lib/materials.csv` | 原材料**怎么定价** |
-| ⑤ 供应商库 | `data/lib/suppliers.csv` | **谁在供货** |
+| # | 数据库 | 文件 | 回答的问题 |
+|---|-------|------|-----------|
+| ① | 产品规格库 | `data/products/products_db.json` | 这台机器**是什么** |
+| ② | 拆机档案 | `data/teardowns/{slug}_*.csv` + `fcc/{slug}/` | 这台机器**用了什么件** |
+| ③ | 标准件库 | `data/lib/components_lib.csv` | 这类件**值多少钱** |
+| ④ | 材料库 | `data/lib/materials.csv` | 原材料**怎么定价** |
+| ⑤ | 供应商应该成本库 | `data/lib/suppliers.csv` | **谁在供货**、应该成本是多少 |
+| ⑥ | 工艺库 | `data/lib/processes.csv` _(待建)_ | 这个件**怎么做出来**、工时多少 |
+| ⑦ | 模具库 | `data/lib/molds.csv` _(待建)_ | 模具**摊销多少**、寿命多少 |
+| ⑧ | 加工工具库 | `data/lib/tooling.csv` _(待建)_ | 用什么**夹具/刀具**、单件折旧多少 |
+| ⑨ | PLANS 研究库 | `data/plans/plans_db.json` + `{slug}/*.md` | 我们做过哪些**降本研究** |
 
-**数据流**：
-
-```
-/product → ①产品库 ──┐
-                      ├──→ /bom ──→ /dfma
-/fcc ocr → ②拆机档案 ─┘    ↑
-                       ③标准件库（查价）
-                       ④材料库  （原料单价）
-                       ⑤供应商库（供应链）
-```
+> ⑥/⑦/⑧ 三库是 `/dfm` 应该成本（Should Cost）建模的关键输入：
+> **应该成本 = 材料（④）+ 加工工时×费率（⑥工艺）+ 模具摊销（⑦）+ 工具折旧（⑧）+ 合理利润**
+> 三库 schema 设计中，先以 `/dfm` 子 agent 推理 + 行业基准估算填充，逐步沉淀。
 
 ### 标准件库入库规则
 
-`components_lib.csv` 仅接受高置信度来源：
+`components_lib.csv` 是查价权威表，仅接受高置信度来源：
 
-| 来源 | 入库 |
-|------|------|
-| 人工/实物核实（`confirmed`） | ✓ |
-| 实物拆机 CSV（`teardown`） | ✓ |
-| FCC 文档 OCR（`fcc`） | ✓ |
-| 启发式推导（`inferred`） | ✗ |
-| 行业基准估算（`estimate`） | ✗ |
-| 网络调研（`web`） | ✗ |
+| 来源标记 | 入库 | 说明 |
+|---------|:---:|------|
+| `confirmed` | ✓ | 人工 / 实物核实 |
+| `teardown` | ✓ | 实物拆机 CSV |
+| `fcc` | ✓ | FCC 文档 OCR 识别 |
+| `inferred` | ✗ | 启发式推导 |
+| `estimate` | ✗ | 行业基准估算 |
+| `web` | ✗ | 网络调研 |
 
-> 跑完 `/fcc ocr` 后直接执行 `python scripts/build_components.py` 即可入库，无需先跑 `/bom`。
+> 跑完 `python scripts/fetch_fcc.py ocr "<品牌> <型号>"` 后执行 `python scripts/build_components.py` 即可入库。
 
-### 数据维护入口
+---
 
-| 要改什么 | 在哪里改 |
-|---------|---------|
-| 桶定义 / 典型子项 / 基准占比 | `core/bom_8bucket_framework.json` |
-| 一级成本参考值 | `core/bom_8bucket_framework.json` → `level1_categories` |
-| 零件价格 | `data/lib/components_lib.csv` → `cost_min` / `cost_max` |
-| 原材料单价 | `data/lib/materials.csv` → `price_min` / `price_max` |
-| 供应商信息 | `data/lib/suppliers.csv` → `tier` / `payment_terms` |
-| 型号别名 | `data/products/model_aliases.csv` |
-| 新增竞品规格 | `data/products/products.csv` → `python scripts/import_products.py` |
+## 7 桶成本框架
+
+`/teardown` 子 agent 产生的 BOM 按 7 桶组织（基准来自开源证券·科沃斯 T80S 拆解 2024）：
+
+| # | 桶 | 基准占比 |
+|:-:|----|:---:|
+| 1 | 算力与电子 | ~13% |
+| 2 | 感知系统 | ~16% |
+| 3 | 动力与驱动 | ~11% |
+| 4 | 清洁功能 | ~20% |
+| 5 | 基站系统 | ~24% |
+| 6 | 能源系统 | ~7% |
+| 7 | 整机结构 CMF | ~13% |
+
+整机 BOM 率：旗舰约 40~55%（硬件物料 / 零售价）。详细 4 级分解见 [SKILL.md](SKILL.md)。
 
 ---
 
@@ -187,47 +145,25 @@ python scripts/cost_mfg_bom.py data/bom/xxx.csv --msrp 2999
 
 ```
 unit-bot/
-├── SKILL.md          # OpenClaw skill 元数据 + 命令文档
-├── agent.py          # Agent 主循环
-├── config.yaml       # 路径配置
+├── agent.py                   # 主 orchestrator（46 工具，含 15 个 plans_*）
+├── 价值设计流程PLANS.md         # PLANS 方法论原文（事实来源）
 │
-├── core/
-│   ├── bom_8bucket_framework.json   # ★ 7 桶模板（单一事实源）
-│   ├── bucket_framework.py
-│   ├── bom_rules.py                 # 归桶规则
-│   ├── components_lib.py
-│   ├── materials_lib.py
-│   ├── auxiliary_parts.py
-│   ├── db.py
-│   └── feishu_sync.py               # 飞书同步（可选）
-│
-├── scripts/
-│   ├── gen_teardown.py              # 拆机 4-Stage Pipeline
-│   ├── cost_mfg_bom.py             # 制造 BOM 成本分析
-│   ├── fetch_fcc.py
-│   ├── import_products.py
-│   ├── build_components.py
-│   └── export_framework_csv.py
-│
-└── data/
-    ├── lib/
-    │   ├── components_lib.csv       # 权威查价表（200+ SKU）
-    │   ├── standard_parts.json
-    │   ├── materials.csv            # 原材料单价（22 种）
-    │   └── suppliers.csv            # 供应商库（37 家）
-    ├── products/
-    │   ├── model_aliases.csv        # 入 git
-    │   └── products_db.json         # 私有
-    └── teardowns/
-        ├── {slug}_{YYYYMMDD}_teardown.csv
-        └── fcc/{slug}/
+├── agents/      # 12 个 PLANS 子 agent，每个一目录 → agents/README.md
+├── core/        # 7 桶框架 / 标准件库 / PLANS 数据库读写等核心模块
+├── scripts/     # CLI 等价脚本（批量场景用）
+├── docs/        # 架构设计稿
+└── data/        # 6 个数据库的物理存储
 ```
+
+完整文件树和各模块说明见 [agents/README.md](agents/README.md) 和 [docs/agents_architecture.md](docs/agents_architecture.md)。
 
 ---
 
-## 参考资料
+## 进一步阅读
 
-- [SKILL.md](SKILL.md) — 完整命令文档（Pipeline 细节 / 置信度层级 / 7 桶字段说明）
-- [fccid.io](https://fccid.io) · [fcc.report](https://fcc.report) — FCC 文档检索
-- [立创商城](https://www.szlcsc.com) · [Digi-Key](https://www.digikey.cn) · [1688](https://www.1688.com) — 动态价格来源
-- 开源证券·科沃斯 T80S 成本拆解（2024）— 一级成本占比数据来源
+| 想了解 | 看哪里 |
+|--------|--------|
+| PLANS 方法论原文 | [价值设计流程PLANS.md](价值设计流程PLANS.md) |
+| 12 子 agent 详细职责 + 文件约定 | [agents/README.md](agents/README.md) |
+| 命令完整参数和使用细节 | [SKILL.md](SKILL.md) |
+| 多 agent 编排架构设计 | [docs/agents_architecture.md](docs/agents_architecture.md) |
