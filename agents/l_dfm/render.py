@@ -28,16 +28,33 @@ def render_md(product_key: str, stage_title: str, data: dict[str, Any]) -> str:
 
     sc = data.get("should_cost_analysis", [])
     if sc:
-        lines.append("## 应该成本（Should Cost）建模\n")
-        lines.append("| 件 | 材料 | 加工 | 利润 | 应该成本 | 当前报价 | 差距 | 谈判优先级 |")
-        lines.append("|----|------|------|------|---------|---------|------|-----------|")
+        lines.append("## 应该成本（Should Cost）五要素建模\n")
+        lines.append("| 件 | 模号 | ①材料 | ②加工 | ③模具摊销 | ④工具折旧 | ⑤利润 | Should Cost | 当前报价 | gap% | 优先级 |")
+        lines.append("|----|------|-------|-------|----------|----------|-------|-------------|---------|------|-------|")
         for s in sc:
+            gap_pct = s.get("gap_pct", "")
+            gap_str = f"{gap_pct}%" if gap_pct != "" else "-"
             lines.append(
-                f"| {s.get('part','')} | ¥{s.get('material_cost','-')} | "
-                f"¥{s.get('process_cost','-')} | ¥{s.get('fair_profit','-')} | "
+                f"| {s.get('part','')} | `{s.get('mold_id','')}` | "
+                f"¥{s.get('material_cost','-')} | ¥{s.get('process_cost','-')} | "
+                f"¥{s.get('mold_amortization','-')} | ¥{s.get('tooling_depreciation','-')} | "
+                f"¥{s.get('fair_profit','-')} | "
                 f"**¥{s.get('should_cost','-')}** | ¥{s.get('current_price','-')} | "
-                f"¥{s.get('gap_cny','-')} | {s.get('negotiation_priority','')} |"
+                f"{gap_str} | {s.get('negotiation_priority','')} |"
             )
         lines.append("")
+        # 详细引用追溯
+        lines.append("### Should Cost 五要素 — 查库引用追溯\n")
+        for s in sc:
+            lines.append(f"**{s.get('part','')}**")
+            for label, key in [
+                ("①材料",        "material_ref"),
+                ("②加工",        "process_ref"),
+                ("③模具摊销",    "mold_amortization_ref"),
+                ("④工具折旧",    "tooling_ref"),
+            ]:
+                if s.get(key):
+                    lines.append(f"  - {label}：{s[key]}")
+            lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"

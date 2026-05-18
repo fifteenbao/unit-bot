@@ -3,7 +3,19 @@
 OUTPUT_SCHEMA_DOC = """
 {
   "teardown_sequence": [
-    {"layer": int, "name": str, "action": str, "tool": str, "difficulty": "easy/medium/hard"}, ...
+    {
+      "bom_level":   int,            # 1~5，对齐工业 BOM 层级（L1 整机/基站裸机/包材 → L5 末端零件）
+      "layer":       int,            # 拆解时的物理层（外壳层=1，主板层=2，子模块层=3…）
+      "name":        str,
+      "action":      str,
+      "tool":        str,
+      "difficulty":  "easy/medium/hard",
+      "material":    str,            # 牌号优先（ABS181 / PC3113 / SUS304 / POM 等）
+      "process":     str,            # 工艺标签（注塑/CNC/电镀/硅胶模压/PCB/SMT/线束/紧固件…）
+      "mold_id":     str,            # 模号（使用你内部脱敏编号，如 MOLD-INJ-S-001），未识别填 ""
+      "supply_mode": "外购/委外/自制",
+      "qty":         int             # 单台用量
+    }, ...
   ],
   "assembly_inference": {
     "order_pattern":             "自上而下/多向/翻转",

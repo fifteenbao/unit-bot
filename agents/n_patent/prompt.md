@@ -32,6 +32,16 @@
 ### 4. 律师评估清单
 列出本次工程规避**仍残留风险**的点，标为「需律师专项评估」。
 
+## ⚠️ 强制 evidence + 法务字段
+
+**每条 risk_patent 必须填齐 4 个法务字段**：
+- `patent_url`：Google Patents (`https://patents.google.com/patent/...`) 或 CNIPA / 智慧芽链接，**必填可点击 URL**
+- `patent_date`：申请日或公开日 (`YYYY-MM-DD`)，决定剩余有效期
+- `jurisdiction`：`CN` / `US` / `EU` / `WO` / `JP` / `KR`——多地区用逗号分隔
+- `evidence_from_fos`：引用 `/fos.fos_proposals[i].candidate_replacement`——避免脱节判断
+
+**`design_around_options` 每条也要 `evidence_from_fos`**——规避方案必须对应到一个 fos 候选。
+
 ## 工具使用建议
 
 1. `web_search` 是核心：搜专利数据库（Google Patents / 智慧芽 / 国家知识产权局）。
@@ -51,11 +61,16 @@
   ],
   "risk_patents": [
     {
-      "patent_id":            "CN... / US... / WO...",
-      "title":                "...",
-      "key_claims":           ["...独立权利要求关键特征..."],
-      "match_to_candidate":   "完全相同/等同/实质不同",
-      "risk_level":           "高/中/低"
+      "patent_id":            "CN114521843A",
+      "patent_url":           "https://patents.google.com/patent/CN114521843A",
+      "patent_date":          "2022-05-24",
+      "jurisdiction":         "CN",
+      "title":                "一种扫地机器人的多锥气旋分离装置",
+      "key_claims":           ["claim 1: 包含 N≥3 个并联锥体, 每锥进气口面积比 1:0.7:0.5..."],
+      "match_to_candidate":   "等同",
+      "evidence_from_fos":    "fos.fos_proposals[0].candidate_replacement: 6 锥并联气旋",
+      "risk_level":           "高",
+      "remaining_years":      16
     }
   ],
   "design_around_options": [

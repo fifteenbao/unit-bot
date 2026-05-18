@@ -23,12 +23,18 @@ def render_md(product_key: str, stage_title: str, data: dict[str, Any]) -> str:
     rp = data.get("risk_patents", [])
     if rp:
         lines.append("## 风险专利清单\n")
-        lines.append("| 专利号 | 标题 | 与候选方案的关系 | 风险等级 |")
-        lines.append("|--------|------|----------------|---------|")
+        lines.append("| 专利号 | 地区 | 申请日 | 剩余 | 标题 | 与候选关系 | fos 引用 | 风险 |")
+        lines.append("|--------|------|-------|------|------|-----------|---------|------|")
         for r in rp:
+            pid = r.get("patent_id", "")
+            url = r.get("patent_url", "")
+            pid_cell = f"[{pid}]({url})" if url else pid
+            rem = r.get("remaining_years", -1)
+            rem_str = f"{rem}年" if isinstance(rem, (int, float)) and rem >= 0 else "—"
             lines.append(
-                f"| {r.get('patent_id','')} | {r.get('title','')} | "
-                f"{r.get('match_to_candidate','')} | {r.get('risk_level','')} |"
+                f"| {pid_cell} | {r.get('jurisdiction','')} | {r.get('patent_date','')} | "
+                f"{rem_str} | {r.get('title','')} | {r.get('match_to_candidate','')} | "
+                f"{r.get('evidence_from_fos','')} | {r.get('risk_level','')} |"
             )
         lines.append("")
         # 详细 claims
@@ -44,13 +50,13 @@ def render_md(product_key: str, stage_title: str, data: dict[str, Any]) -> str:
     da = data.get("design_around_options", [])
     if da:
         lines.append("## 规避方案选项\n")
-        lines.append("| 策略 | 具体改动 | 损失能力 | 工程成本 | 残留风险 |")
-        lines.append("|------|---------|---------|---------|---------|")
+        lines.append("| 策略 | 具体改动 | 损失能力 | 工程成本 | 残留风险 | fos 引用 |")
+        lines.append("|------|---------|---------|---------|---------|---------|")
         for d in da:
             lines.append(
                 f"| {d.get('strategy','')} | {d.get('concrete_change','')} | "
                 f"{d.get('lost_capability','')} | {d.get('engineering_cost','')} | "
-                f"{d.get('residual_risk','')} |"
+                f"{d.get('residual_risk','')} | {d.get('evidence_from_fos','')} |"
             )
         lines.append("")
 

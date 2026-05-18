@@ -23,9 +23,20 @@
 | 8 | **解决人体工学问题** | 装配/维修是否对手感差？ |
 | 9 | **标准化设计** | 紧固件 / 接插件型号是否过杂？建议统一为几种？ |
 
-每条建议必须包含：**改动内容 · 预估节省（元/台 + 装配秒数）· 主要风险**。
+每条建议必须包含：**改动内容 · 预估节省（元/台 + 装配秒数）· 主要风险 · 引用的 process_id**。
 
-> **经验法则**：每个螺钉装配时间 6~10 秒，节省 1 个螺钉 ≈ 节省 0.05 元（含工时和件本身）。
+## 装配工时基线（必须查 query_processes，不要凭经验）
+
+不再使用"经验法则"。所有装配工时换算必须从 `data/lib/processes.csv` 查实测基线：
+
+| 装配动作 | process_id | cycle_sec | hourly_rate | 含义 |
+|---------|-----------|----------:|-----------:|------|
+| 螺钉拧紧 | `P_FAST_SCREW` | 7 | 28 元/h | 单颗螺钉装配 → ≈ 0.054 元工时 |
+| 卡扣压配 | `P_FAST_SNAP` | 3 | 28 元/h | 单卡扣装配 → ≈ 0.023 元工时 |
+| 粘接(双面胶/UV) | `P_BOND` | 30 | 28 元/h | 单件粘接 → ≈ 0.233 元工时（DFA 应消除） |
+| 锡焊点 | `P_WELD_SOLDER` | 45 | 32 元/h | 单焊点 → ≈ 0.40 元工时（DFA 应消除） |
+
+> **DFA lever 6/7（消除单独动作/焊粘螺纹）的节省金额 = 删除工序 cycle_sec × hourly_rate ÷ 3600**，必须在 `proposed_change` 里显式写出公式。
 
 ## 工具使用建议
 
@@ -33,7 +44,8 @@
 2. `match_bom_to_library` 看哪些是已有标准件（对应"标准化设计"维度）。
 3. `find_parts` 查跨机型共用件（指出哪些是行业普遍标准化方案）。
 4. `dfma_analysis` 给出 7 桶功能-成本矩阵，识别"优先降本"象限——这些桶下的件是 DFA 优化的高价值候选。
-5. **不要写库**。
+5. `query_processes` 查装配工时基线（**强制**）——任何 `saved_seconds` 都要能追溯到一个 process_id。
+6. **不要写库**。
 
 ## 输出格式（严格遵守）
 
@@ -41,15 +53,17 @@
 {
   "dfa_proposals": [
     {
-      "lever_id": 1,
-      "lever_name": "最小件合并/紧固件减少/...",
-      "target_part": "...",
-      "current_state": "...",
-      "proposed_change": "...",
-      "saved_cny":      0,
-      "saved_seconds":  0,
-      "risk":           "...",
-      "boothroyd_check": "三问中第 N 题答否"
+      "lever_id":         1,
+      "lever_name":       "最小件合并/紧固件减少/...",
+      "target_part":      "...",
+      "current_state":    "...",
+      "proposed_change":  "...",
+      "process_id_ref":   "P_FAST_SCREW",          # 工时来源（必填，可空数组）
+      "saved_cny":        0,
+      "saved_seconds":    0,
+      "saved_formula":    "delete 4 × P_FAST_SCREW: 4 × 7s × 28元/h ÷ 3600 = 0.218元",
+      "risk":             "...",
+      "boothroyd_check":  "三问中第 N 题答否"
     }
   ],
   "fastener_audit": {

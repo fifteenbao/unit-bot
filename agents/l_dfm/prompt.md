@@ -32,23 +32,42 @@
 - 最小弯曲内半径 ≥ 材料厚度
 - 孔到折弯边距离 ≥ 1.5×板厚 + 弯曲半径
 
-## 应该成本（Should Cost）
+## 应该成本（Should Cost）— 五要素建模
 
-任选 3~5 个核心件，**从零建模**：
-- **材料成本** = 单件用料(g) × 材料单价(元/kg) ÷ 1000
-- **加工成本** = 加工工时(s) × 工时费率(元/小时) ÷ 3600
-- **合理利润** = (材料 + 加工) × 8%~15%
-- **应该成本** = 材料 + 加工 + 利润
+任选 3~5 个核心件，**从零建模**。公式必须显式查 4 张库：
 
-对比当前估算价 vs 应该成本，识别**报价虚高**的件。
+| 要素 | 公式 | 来源库 | 工具 |
+|------|------|--------|------|
+| ① 材料成本 | 单件用料(g) × 单价(元/kg) ÷ 1000 | `materials.csv` | `query_materials` |
+| ② 加工成本 | `cycle_sec × hourly_rate ÷ 3600` | `processes.csv` | `query_processes` |
+| ③ 模具摊销 | `unit_amortization_cny`（按 cavity 折单件） | `molds.csv` | `query_molds` |
+| ④ 工具折旧 | `unit_depreciation_cny` 累加适用治具/刀具 | `tooling.csv` | `query_tooling` |
+| ⑤ 合理利润 | (①+②+③+④) × 8%~15% | — | — |
+
+**应该成本 = ① + ② + ③ + ④ + ⑤**
+
+> 注：`processes.csv` 已含 `scrap_rate_pct`，加工成本计算时应除以 `(1 - scrap_rate/100)` 才是真实摊到良品的成本。
+
+### 模具命中识别
+若 `/teardown` 已给出 `mold_id` 字段（你内部约定的脱敏编号即可），直接 `query_molds(mold_id)` 拿摊销值；
+未给则按几何尺寸 + 材料估算模具等级（小件 / 中件 / 大件 / 共模 1+1）。
+
+### 对比与诊断
+拿应该成本对比 `get_bom_cost` 当前估算价：
+- **gap_cny > 20% 当前价** → 高优先级谈判件
+- **②加工成本 > ①材料成本 2 倍** → 工艺优化候选（CNC→注塑 / 喷涂→免喷涂）
+- **③模具摊销 > 10% 单件成本** → 模具未摊够 / 出量不足，候选共模合并
 
 ## 工具使用建议
 
 1. `query_materials` 拿原材料单价（22 种工程塑料/弹性体/金属/滤材已收录）。
-2. `query_suppliers` 找替代供应商。
-3. `cut_premium` 直接给溢价件清单——这些就是应该成本谈判的高优先级目标。
-4. `dfma_analysis` 看 7 桶成本结构。
-5. **不要写库**。
+2. `query_processes` 拿工艺基线（22 条：注塑 S/M/L/共模 + CNC + 压铸 + 钣金 + 电镀 + PCB + SMT/DIP + 线束 + 紧固件…）。
+3. `query_molds` 拿模具摊销（按内部脱敏编号或自定义命名规则维护）。
+4. `query_tooling` 拿夹具/刀具折旧（21 条：注塑机模架 / CNC 刀具 / 电镀挂具 / SMT 钢网 / 端子压接模 / 盐雾测试设备 等）。
+5. `query_suppliers` 找替代供应商。
+6. `cut_premium` 直接给溢价件清单——这些就是应该成本谈判的高优先级目标。
+7. `dfma_analysis` 看 7 桶成本结构。
+8. **不要写库**。
 
 ## 输出格式（严格遵守）
 
@@ -68,14 +87,22 @@
   ],
   "should_cost_analysis": [
     {
-      "part": "...",
-      "material_cost": 0,
-      "process_cost": 0,
-      "fair_profit":   0,
-      "should_cost":   0,
-      "current_price": 0,
-      "gap_cny":       0,
-      "negotiation_priority": "高/中/低"
+      "part":                  "滚刷齿轮箱底座",
+      "mold_id":               "MOLD-INJ-S-001",
+      "material_cost":         0,
+      "material_ref":          "工程塑料 @ query_materials",
+      "process_cost":          0,
+      "process_ref":           "P_INJ_S cycle 15s × 45元/h × scrap 2% @ query_processes",
+      "mold_amortization":     0,
+      "mold_amortization_ref": "MOLD-INJ-S-001 共模 1+1, 0.02 元/件 @ query_molds",
+      "tooling_depreciation":  0,
+      "tooling_ref":           "T_INJ_FIXTURE_S 0.03 元/件 @ query_tooling",
+      "fair_profit":           0,
+      "should_cost":           0,
+      "current_price":         0,
+      "gap_cny":               0,
+      "gap_pct":               0,
+      "negotiation_priority":  "高/中/低"
     }
   ],
   "total_saved_cny": 0,

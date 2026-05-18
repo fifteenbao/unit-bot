@@ -12,12 +12,14 @@ def render_md(product_key: str, stage_title: str, data: dict[str, Any]) -> str:
     seq = data.get("teardown_sequence", [])
     if seq:
         lines.append("## 拆解流程\n")
-        lines.append("| 层 | 部件 | 动作 | 工具 | 难度 |")
-        lines.append("|---|------|------|------|------|")
+        lines.append("| BOM层 | 拆层 | 部件 | 用量 | 材料 | 工艺 | 模号 | 供应 | 动作 | 工具 | 难度 |")
+        lines.append("|------|------|------|------|------|------|------|------|------|------|------|")
         for s in seq:
             lines.append(
-                f"| {s.get('layer','-')} | {s.get('name','')} | {s.get('action','')} | "
-                f"{s.get('tool','')} | {s.get('difficulty','')} |"
+                f"| {s.get('bom_level','-')} | {s.get('layer','-')} | {s.get('name','')} | "
+                f"{s.get('qty','-')} | {s.get('material','')} | {s.get('process','')} | "
+                f"{s.get('mold_id','')} | {s.get('supply_mode','')} | "
+                f"{s.get('action','')} | {s.get('tool','')} | {s.get('difficulty','')} |"
             )
         lines.append("")
 

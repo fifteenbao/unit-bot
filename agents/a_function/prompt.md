@@ -28,6 +28,16 @@
 - **成本占比（C）**：该载体在整机 BOM 中的成本占比。
 - **价值/成本比（V/C）**：< 0.8 = 过设计，> 1.2 = 欠设计。
 
+### ⚠️ 强制 evidence 锚定（避免主观打分）
+
+**每条 function_model 必须填两个 evidence 字段**，否则视为无效输出：
+- `value_evidence`：V 分必须能追溯到上游具体证据：
+  - 引用 `/research` 的 MVP 痛点：`"research.mvp_pains[i]: <原文>"`
+  - 或引用 `/issues` 的用户期待/抱怨：`"issues.quality_issues[i]: <原文>"`
+  - 或引用 `vs_compare` 的竞品价格差异作为支付意愿证据
+- `cost_evidence`：C 分必须引用 `dfma_analysis` 7 桶占比、`teardown` 中具体件的 BOM 占比，或可比件的 `query_materials` 单价
+- **over_design / under_design 的 `evidence_ref` 字段同理**——`under_design` 的每条必须能引用到 `/research` 或 `/issues` 的具体记录，不能凭空说"用户期待"
+
 ### 功能缺陷识别
 - **过设计**（V/C < 0.8）：成本投入 > 用户感知价值。
 - **欠设计**（V/C > 1.2）：用户痛点未满足，应该追加投入。
@@ -47,19 +57,32 @@
 {
   "function_model": [
     {
-      "function":      "动词+名词",
-      "function_type": "MF/AF/AdditionalF/HarmfulF",
-      "carriers":      ["..."],
-      "value_score":   0.0,
-      "cost_share":    0.0,
-      "v_over_c":      0.0
+      "function":        "吸尘",
+      "function_type":   "MF",
+      "carriers":        ["主吸风机", "尘盒", "滤网"],
+      "value_score":     1.3,
+      "cost_share":      0.08,
+      "v_over_c":        16.3,
+      "value_evidence":  "research.mvp_pains[0]: 大颗粒吸不干净，需要二次清扫",
+      "cost_evidence":   "dfma_analysis 桶4 清洁功能 ~20%, 其中吸风机+尘盒 ~8%"
     }
   ],
   "over_design": [
-    {"function": "...", "carrier": "...", "v_over_c": 0.0, "evidence": "..."}
+    {
+      "function":     "...",
+      "carrier":      "...",
+      "v_over_c":     0.0,
+      "evidence_ref": "function_model[3]",
+      "evidence":     "..."
+    }
   ],
   "under_design": [
-    {"function": "...", "user_pain": "...", "evidence": "..."}
+    {
+      "function":     "...",
+      "user_pain":    "...",
+      "evidence_ref": "research.mvp_pains[2] / issues.quality_issues[1]",
+      "evidence":     "..."
+    }
   ],
   "function_redundancy": [
     {"function": "...", "carriers": ["...", "..."], "rationale": "..."}

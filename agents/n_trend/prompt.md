@@ -40,41 +40,77 @@
 | **新造型** | 去基站化 / 双机协作 / 模块化机身 / 折叠收纳 |
 | **新控制** | 端侧大模型 / 多模态视觉 / 与家庭 IoT 联动 / 自学习路径 |
 
+## ⚠️ 强制量化证据 + 工艺库对接
+
+**S 曲线位置判断必须有 3 类定量证据**（避免"我觉得是成熟期"）：
+1. `shipment_data`：近 3~5 年中国/全球出货量（来源：奥维云网 / IDC / Statista）
+2. `asp_trend`：均价走势（来源：京东/天猫均价、上市公司年报）
+3. `spec_innovation`：关键性能指标 1~2 年内的刷新幅度（吸力 1.5x = 成长期，持平 = 成熟期）
+
+**子系统 S 曲线位置必须附 `evolution_data_3y`**——近 3 年该子系统的关键指标变化轨迹。
+
+**四新设计每条必须填 `evidence_source`**：
+- new_material / new_process：尽量引用论文 DOI、专利 ID、行业报告链接
+- new_process 应同时填 `process_id_ref`——若工艺已进入 `processes.csv` 工艺库则填对应 ID，否则填 "尚未入库"（这是供应链就绪度的硬信号）
+- new_form / new_control：引用首发产品官宣 / 行业大会发布
+
 ## 工具使用建议
 
 1. `web_search` 是核心：搜「扫地机器人趋势」「robot vacuum 2026 trends」「专利申请热点」。
 2. `vs_compare` + `compare_by_spec` 拉竞品横截面，识别行业演进速度。
 3. `query_materials` 找新材料候选。
-4. **不要写库**。
+4. `query_processes` 看哪些新工艺已经进入产业供应链（已入库 = 供应商可批量交付）。
+5. `query_molds` / `query_tooling` 看新造型对模具/治具投入的影响。
+6. **不要写库**。
 
 ## 输出格式（严格遵守）
 
 ```json
 {
   "s_curve_analysis": {
-    "industry_position":   "导入期/成长期/成熟期/衰退期",
+    "industry_position":   "成熟期早期",
+    "industry_position_evidence": {
+      "shipment_data":   "中国 2022 600万 → 2024 850万 (奥维云网), 增速 19%",
+      "asp_trend":       "京东均价 2022 ¥3200 → 2024 ¥2800",
+      "spec_innovation": "吸力 2022 8000Pa → 2024 22000Pa (近 2x), 续航持平"
+    },
     "subsystem_positions": [
-      {"subsystem": "...", "position": "...", "evidence": "..."}
+      {
+        "subsystem":         "导航系统",
+        "position":          "成熟期",
+        "evidence":          "LDS+视觉融合已全价位段标配",
+        "evolution_data_3y": "2022 仅旗舰 (¥4000+) → 2024 ¥2000+ 已标配"
+      }
     ],
-    "next_s_curve_seed":   "..."
+    "next_s_curve_seed":   "端侧大模型 + 多模态视觉"
   },
   "evolution_directions": [
     {
-      "trend":             "理想化/动态化/可控性/集成化/智能化",
-      "concrete_pathway":  "...",
-      "first_mover":       "..."
+      "trend":            "智能化",
+      "concrete_pathway": "端侧 7B 大模型理解清扫需求",
+      "first_mover":      "石头 P10 Pro Ultra",
+      "first_mover_url":  "https://example.com/p10-pro-launch"
     }
   ],
   "four_new": {
-    "new_material": ["..."],
-    "new_process":  ["..."],
-    "new_form":     ["..."],
-    "new_control":  ["..."]
+    "new_material": [
+      {"item": "石墨烯滤膜", "evidence_source": "DOI:10.xxxx", "process_id_ref": "尚未入库"}
+    ],
+    "new_process":  [
+      {"item": "微注塑 + 共模 1+1", "evidence_source": "专利 CN2024xxxxxxx",
+       "process_id_ref": "P_INJ_DOUBLE"}
+    ],
+    "new_form":     [
+      {"item": "去基站化便携尘盒", "evidence_source": "Dyson 360 Vis Nav 设计语言"}
+    ],
+    "new_control":  [
+      {"item": "端侧大模型自学习清扫路径", "evidence_source": "Roborock CES 2025 演示"}
+    ]
   },
   "innovation_roadmap_3y": [
-    {"year": 1, "milestone": "..."},
-    {"year": 2, "milestone": "..."},
-    {"year": 3, "milestone": "..."}
+    {"year": 1, "milestone": "...", "dependency": "new_process[0]"},
+    {"year": 2, "milestone": "...", "dependency": "new_control[0]"},
+    {"year": 3, "milestone": "...", "dependency": "new_form[0]"}
   ],
   "summary": "一句话总结最有潜力的下一代创新方向"
 }

@@ -13,7 +13,11 @@ def render_md(product_key: str, stage_title: str, data: dict[str, Any]) -> str:
     if ca:
         lines.append("## 产品复杂性评估\n")
         lines.append(f"- **SKU 数**：{ca.get('sku_count', '-')}")
-        lines.append(f"- **共件率**：{ca.get('shared_parts_rate', '-')}")
+        shared = ca.get('shared_parts_count', '-')
+        total = ca.get('total_parts_count', '-')
+        rate = ca.get('shared_parts_rate', '-')
+        lines.append(f"- **共件率**：{shared} / {total} = {rate}")
+        lines.append(f"- **共模数 (实测)**：{ca.get('mold_reuse_count', '-')}")
         lines.append(f"- **平台化程度**：{ca.get('platformization_score', '-')}")
         lines.append(f"- **复杂度评分**：**{ca.get('complexity_score', '-')}** / 1.0")
         if ca.get("complexity_evidence"):
@@ -23,13 +27,16 @@ def render_md(product_key: str, stage_title: str, data: dict[str, Any]) -> str:
     pc = data.get("platform_candidates", [])
     if pc:
         lines.append("## 平台化候选子系统\n")
-        lines.append("| 子系统 | 频次 | 跨机型差异 | ROI 优先级 | 理由 |")
-        lines.append("|--------|------|-----------|-----------|------|")
+        lines.append("| 子系统 | 频次 | 跨机型差异 | ROI | 现模号 | trim 引用 | fos 引用 | 理由 |")
+        lines.append("|--------|------|-----------|-----|--------|----------|---------|------|")
         for p in pc:
+            mids = p.get("current_mold_ids", [])
+            mids_str = ", ".join(mids) if isinstance(mids, list) else (mids or "")
             lines.append(
                 f"| {p.get('subsystem','')} | {p.get('frequency','')} | "
                 f"{p.get('cross_model_variance','')} | {p.get('roi_priority','')} | "
-                f"{p.get('rationale','')} |"
+                f"{mids_str} | {p.get('evidence_from_trim','')} | "
+                f"{p.get('evidence_from_fos','')} | {p.get('rationale','')} |"
             )
         lines.append("")
 
@@ -44,6 +51,10 @@ def render_md(product_key: str, stage_title: str, data: dict[str, Any]) -> str:
             lines.append(f"- **覆盖机型**：{covers}")
             lines.append(f"- **可变参数**：{params}")
             lines.append(f"- **接口标准**：{stds}")
+            if p.get("mold_strategy"):
+                lines.append(f"- **共模策略**：{p['mold_strategy']}")
+            if p.get("roi_should_cost_delta"):
+                lines.append(f"- **量化 ROI**：{p['roi_should_cost_delta']}")
             lines.append(f"- **预期 ROI**：{p.get('expected_roi', '')}")
             lines.append("")
 

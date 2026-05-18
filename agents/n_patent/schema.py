@@ -11,11 +11,16 @@ OUTPUT_SCHEMA_DOC = """
   ],
   "risk_patents": [
     {
-      "patent_id":          str,
+      "patent_id":          str,        # 标准格式 CN.../US.../WO.../EP...
+      "patent_url":         str,        # 可点击链接（Google Patents/智慧芽/CNIPA），必填
+      "patent_date":        str,        # 申请日或公开日 YYYY-MM-DD，影响剩余有效期
+      "jurisdiction":       str,        # CN / US / EU / WO / JP / KR — 多地区用逗号
       "title":              str,
       "key_claims":         [str, ...],
       "match_to_candidate": "完全相同/等同/实质不同",
-      "risk_level":         "高/中/低"
+      "evidence_from_fos":  str,        # 必填：引用 fos.fos_proposals[i].candidate_replacement
+      "risk_level":         "高/中/低",
+      "remaining_years":    int         # 剩余有效期估算（专利 20 年 - 当前距申请日年数），未知填 -1
     }, ...
   ],
   "design_around_options": [
@@ -24,7 +29,8 @@ OUTPUT_SCHEMA_DOC = """
       "concrete_change":   str,
       "lost_capability":   str,
       "engineering_cost":  "低/中/高",
-      "residual_risk":     str
+      "residual_risk":     str,
+      "evidence_from_fos": str          # 必填：所对应的 fos 提案
     }, ...
   ],
   "needs_lawyer_review": [

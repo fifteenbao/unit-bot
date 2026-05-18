@@ -3,8 +3,17 @@
 OUTPUT_SCHEMA_DOC = """
 {
   "quality_issues": [
-    {"phenomenon": str, "frequency": "高频/中频/低频",
-     "impact": str, "evidence_source": str}, ...
+    {
+      "phenomenon":      str,
+      "frequency":       "高频/中频/低频",
+      "frequency_pct":   float,        # 估算月退修率/投诉占比 0~100；无数据时填 -1
+      "impact":          str,
+      "key_part_flag":   bool,         # 故障点是否落在工业 BOM 标注的"关键件"上
+                                       # (扫地机典型关键件: 电池/电机/主板/激光雷达/拖布升降模组)
+      "key_part_name":   str,          # 关键件名称（如"电池"/"滚刷电机"），非关键件填 ""
+      "evidence_source": str,
+      "evidence_url":    str           # 至少一条可点击来源；无则填 ""
+    }, ...
   ],
   "service_issues": [
     {"area": "易耗品/维修/政策", "issue": str, "user_impact": str}, ...

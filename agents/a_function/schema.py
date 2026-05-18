@@ -4,19 +4,32 @@ OUTPUT_SCHEMA_DOC = """
 {
   "function_model": [
     {
-      "function":      str,
-      "function_type": "MF/AF/AdditionalF/HarmfulF",
-      "carriers":      [str, ...],
-      "value_score":   float,    # 0~1.5
-      "cost_share":    float,    # 0~1
-      "v_over_c":      float
+      "function":        str,
+      "function_type":   "MF/AF/AdditionalF/HarmfulF",
+      "carriers":        [str, ...],
+      "value_score":     float,    # 0~1.5
+      "cost_share":      float,    # 0~1
+      "v_over_c":        float,
+      "value_evidence":  str,      # 必填——必须引用上游具体证据，格式 "research.mvp_pains[i]: ..." 或 "issues.quality_issues[i]: ..."
+      "cost_evidence":   str       # 引用 dfma_analysis / teardown.bom 来源，如 "teardown.L3.滚刷电机组件 (BOM 占比 4.2%)"
     }, ...
   ],
   "over_design": [
-    {"function": str, "carrier": str, "v_over_c": float, "evidence": str}, ...
+    {
+      "function":     str,
+      "carrier":      str,
+      "v_over_c":     float,
+      "evidence_ref": str,   # 引用 function_model[i] 或 teardown 具体件
+      "evidence":     str
+    }, ...
   ],
   "under_design": [
-    {"function": str, "user_pain": str, "evidence": str}, ...
+    {
+      "function":     str,
+      "user_pain":    str,
+      "evidence_ref": str,   # 必须引用 research.mvp_pains[i] 或 issues.quality_issues[i]
+      "evidence":     str
+    }, ...
   ],
   "function_redundancy": [
     {"function": str, "carriers": [str, ...], "rationale": str}, ...

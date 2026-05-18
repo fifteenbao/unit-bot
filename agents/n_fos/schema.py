@@ -12,6 +12,10 @@ OUTPUT_SCHEMA_DOC = """
       "key_suppliers":             [str, ...],
       "integration_difficulty":    "低/中/高",
       "expected_cost_vs_current":  str,
+      "cost_evidence":             str,    # 必填：引用 dfm.should_cost_analysis 或 query_processes/molds 给出成本依据
+      "process_id_candidate":      str,    # 新方案对应的 process_id（如改用 P_INJ_DOUBLE 共模、P_STAMP 钣金代替 CNC），无则填 ""
+      "evidence_from_trim":        str,    # 必填：引用 trim.architectural_bottlenecks[i] 或 trim.trim_decisions[i]
+      "user_pain_ref":             str,    # 必填：引用 research.mvp_pains[i] 或 issues.quality_issues[i]，证明该功能值得创新
       "risks":                     [str, ...]
     }, ...
   ],

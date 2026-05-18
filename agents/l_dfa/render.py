@@ -17,14 +17,15 @@ def render_md(product_key: str, stage_title: str, data: dict[str, Any]) -> str:
     proposals = data.get("dfa_proposals", [])
     if proposals:
         lines.append("## 9 项 DFA 优化提案\n")
-        lines.append("| # | 维度 | 对象 | 现状 | 改动 | 节省(¥) | 节省(秒) | 三问 | 风险 |")
-        lines.append("|---|------|------|------|------|--------|---------|------|------|")
+        lines.append("| # | 维度 | 对象 | 现状 | 改动 | 工艺引用 | 节省(¥) | 节省(秒) | 公式 | 三问 | 风险 |")
+        lines.append("|---|------|------|------|------|---------|--------|---------|------|------|------|")
         for p in sorted(proposals, key=lambda x: x.get("lever_id", 99)):
             lines.append(
                 f"| {p.get('lever_id','-')} | {p.get('lever_name','')} | "
                 f"{p.get('target_part','')} | {p.get('current_state','')} | "
-                f"{p.get('proposed_change','')} | {p.get('saved_cny','')} | "
-                f"{p.get('saved_seconds','')} | {p.get('boothroyd_check','')} | "
+                f"{p.get('proposed_change','')} | {p.get('process_id_ref','')} | "
+                f"{p.get('saved_cny','')} | {p.get('saved_seconds','')} | "
+                f"{p.get('saved_formula','')} | {p.get('boothroyd_check','')} | "
                 f"{p.get('risk','')} |"
             )
         lines.append("")

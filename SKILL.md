@@ -79,37 +79,84 @@ PLANS 拆为 12 个独立子 agent，每个职责单一、上下游清晰。
 | **③ 标准件库** | `data/lib/components_lib.csv` | "值多少钱" — 跨机型聚合定价 | `build_components.py`（仅接受 `fcc/teardown/confirmed`） |
 | **④ 材料库** | `data/lib/materials.csv` | "原材料单价" — 22 种原料的 price_min/max/mid | 直接编辑 CSV |
 | **⑤ 供应商应该成本库** | `data/lib/suppliers.csv` | "谁在供货" + 应该成本 — 37 家供应商的档次/地区/采购条件 | 直接编辑 CSV |
-| **⑥ 工艺库** | `data/lib/processes.csv` _(待建)_ | "怎么做出来" — 注塑/CNC/钣金/压铸的工时和工时费率 | 待建 schema |
-| **⑦ 模具库** | `data/lib/molds.csv` _(待建)_ | "模具摊销多少" — 模具开发成本 / 寿命 / 单件摊销 | 待建 schema |
-| **⑧ 加工工具库** | `data/lib/tooling.csv` _(待建)_ | "用什么夹具刀具" — 工装夹具、刀具、量具的单件折旧 | 待建 schema |
+| **⑥ 工艺库** | `data/lib/processes.csv` | "怎么做出来" — 注塑 S/M/L/共模 + CNC + 压铸 + 钣金 + 电镀 + PCB + SMT/DIP + 线束 + 紧固件，22 工艺基线含 cycle_sec / hourly_rate_cny / scrap_rate_pct | 仓库自带 22 条种子，按需扩充 |
+| **⑦ 模具库** | `data/lib/molds.csv` | "模具摊销多少" — 模具开发成本 / 寿命 / 单件摊销，含共模 1+1/2+2 标识 | 25 条种子，**mold_id 必须用内部脱敏编号**（如 MOLD-INJ-S-001），勿用厂商真实模号 |
+| **⑧ 加工工具库** | `data/lib/tooling.csv` | "用什么夹具刀具" — 注塑机模架 / CNC 刀具 / 电镀挂具 / SMT 钢网 / 端子压接模 等单件折旧 | 21 条种子 |
 | **⑨ PLANS 研究库** | `data/plans/plans_db.json` + `data/plans/{slug}/*.md` | "做过哪些降本研究" — 12 子 agent 产出 | `plans_store.save_stage` 统一写入 |
 
 > **应该成本（Should Cost）公式** = ④ 材料 + ⑥ 加工工时×费率 + ⑦ 模具摊销 + ⑧ 工具折旧 + 合理利润 (8%~15%)
-> 这是 `/dfm` 子 agent 的核心建模逻辑。⑥/⑦/⑧ 三库 schema 待建中，先以 LLM 推理 + 行业基准估算填充。
+> 这是 `/dfm` 子 agent 的核心建模逻辑。⑥/⑦/⑧ 三库 schema 已就绪，由 `core/process_lib.py` 提供统一加载层。
+> ⚠️ `data/lib/` 整体在 `.gitignore` 范围，CSV 文件不会进 git。
 
 ---
 
-## 材料库与供应商库
+## Should Cost 五要素 — 5 个 query_* 工具
 
-Agent 工具 `query_materials` 和 `query_suppliers` 直接读取 CSV，由子 agent 在以下场景自动调用：
+Agent 工具直接读取 CSV，由子 agent 自动调用。这 5 个工具完整覆盖 Should Cost = 材料 + 加工 + 模具摊销 + 工具折旧 + 利润 的前 4 个要素（利润是计算公式不需要库）：
 
-| 场景 | 工具 | 典型调用 |
-|------|------|---------|
-| `/teardown` 供应链分析 | `query_suppliers` | `query_suppliers(category="compute_electronics")` |
-| `/dfm` Should Cost 替代供应商 | `query_suppliers` | `query_suppliers(keyword="SoC", tier="二线")` |
-| `/dfm` structure_cmf 材料成本分解 | `query_materials` | `query_materials(bom_bucket="structure_cmf")` |
-| `/fos` 找新材料候选 | `query_materials` | `query_materials(keyword="HEPA")` |
+| Tool | 库 | 主要用户 | 典型调用 |
+|------|----|---------|---------|
+| `query_materials` | ④ materials.csv (22 种) | `/dfm` `/fos` | `query_materials(bom_bucket="structure_cmf")` / `query_materials(keyword="HEPA")` |
+| `query_processes` | ⑥ processes.csv (22 工艺) | `/dfa` `/dfm` `/fos` `/trend` `/platform` | `query_processes(process_id="P_INJ_S")` / `query_processes(category="塑料成型")` |
+| `query_molds` | ⑦ molds.csv (25 模号种子) | `/dfm` `/fos` `/trend` `/platform` | `query_molds(mold_id="MOLD-INJ-S-001")` / `query_molds(keyword="共模")` |
+| `query_tooling` | ⑧ tooling.csv (21 夹具/刀具) | `/dfm` `/fos` `/trend` `/platform` | `query_tooling(bound_process="P_SMT")` / `query_tooling(category="夹具")` |
+| `query_suppliers` | ⑤ suppliers.csv (37 家) | `/teardown` `/dfm` `/fos` | `query_suppliers(category="compute_electronics")` / `query_suppliers(keyword="SoC", tier="二线")` |
 
-**`query_materials` 过滤参数**：
-- `keyword`：在名称/用途/备注中模糊搜索（如 `"ABS"` / `"拖布"` / `"HEPA"`）
-- `mat_type`：工程塑料 / 弹性体 / 金属 / 滤材 / 织物 / 泡棉 / 涂料 / 复合材料
-- `bom_bucket`：structure_cmf / cleaning / compute_electronics / dock_station / energy
+### 过滤参数速查
 
-**`query_suppliers` 过滤参数**：
-- `keyword`：供应商名称或产品关键词（如 `"Rockchip"` / `"BLDC"` / `"LPDDR"`）
-- `category`：compute_electronics / perception / power_motion / energy / structure_cmf / cleaning
-- `tier`：一线 / 二线 / 三线
-- `region`：大陆 / 台湾 / 日本 / 韩国 / 欧洲 / 美国
+**`query_materials`**：`keyword` / `mat_type` (工程塑料 / 弹性体 / 金属 / 滤材 / 织物 / 泡棉 / 涂料 / 复合材料) / `bom_bucket` (structure_cmf / cleaning / compute_electronics / dock_station / energy)
+
+**`query_processes`**：`keyword` / `category` (塑料成型 / 金属加工 / 表面处理 / 电子 / 装配 / 橡塑成型 / 材料加工) / `process_id` (P_INJ_S / P_CNC_T / P_PLATE_ZN ...)
+
+**`query_molds`**：`keyword` / `mold_id`（按你内部脱敏编号精确匹配）/ `bucket` (`'7_整机结构CMF'` 等)
+
+**`query_tooling`**：`keyword` / `category` (夹具 / 刀具 / 量测) / `bound_process` (P_INJ_S / P_SMT / P_PLATE_ZN ...)
+
+**`query_suppliers`**：`keyword` / `category` / `tier` (一线 / 二线 / 三线) / `region` (大陆 / 台湾 / 日本 / 韩国 / 欧洲 / 美国)
+
+### 典型 Should Cost 建模流程
+
+```
+/dfm 接到 "估算应该成本：滚刷齿轮箱底座" 任务后：
+  1. query_materials(keyword="PC3113")          → ¥18~22/kg
+  2. query_processes(process_id="P_INJ_S")      → cycle 15s × 45元/h × scrap 2%
+  3. query_molds(mold_id="MOLD-INJ-S-001")      → 共模 1+1, 0.02 元/件
+  4. query_tooling(bound_process="P_INJ_S")     → T_INJ_FIXTURE_S 0.03 元/件
+  5. 公式：材料 + 加工 + 模具 + 工具 + 12% 利润 = Should Cost
+  6. 输出 should_cost_analysis[i] 必填 4 个 *_ref 字段引用上述查库结果
+```
+
+### Should Cost vs lib 估算价 — 两个相互独立的数
+
+| | Should Cost | lib 估算价 (components_lib.csv) |
+|--|---|---|
+| 定义 | **件级理论制造下限** | **整机厂入库 BOM 价** (含一级/二级供应商加价) |
+| 来源 | ④⑥⑦⑧ 四库查询 + 工艺级默认 + 12% 利润 | 实拆 / FCC OCR / 行业聚合的真实价 |
+| 与 current_price 关系 | **独立**，不参考 lib 查价 | 直接就是 current_price |
+| 典型扫地机数值 | ¥300~500 / 台 | ¥1100~1500 / 台 |
+| gap 倍数 | — | 2~3 倍（结构 CMF）/ 3~5 倍（模组）/ 5~10 倍（IC） |
+
+> **`cost_mfg_bom.py` 的工艺级默认值**（行业中位数标定，扫地机器人专用）：
+> 
+> | 工艺 | 默认材料 ¥/件 | 默认模具摊销 ¥/件 |
+> |------|---:|---:|
+> | P_INJ_S (小件注塑) | 0.5 | 0.10 |
+> | P_INJ_M (中件注塑) | 2.5 | 0.50 |
+> | P_INJ_L (大件外壳) | 7.0 | **1.20** |
+> | P_INJ_DOUBLE (共模 1+1) | 1.5 | 0.15 |
+> | P_DIE_CAST (压铸) | 4.0 | 0.80 |
+> | P_CNC_T/M | 1.0 / 3.0 | 0（计入 tooling） |
+> | P_SIL_COMP (硅胶模压) | 0.3 | 0.05 |
+>
+> 注：当 BOM spec 未写"模号:XXX"且 `query_molds` 未命中时，使用以上默认值兜底；命中时优先用真实摊销。
+
+### gap% 解读规则
+
+| gap% 范围 | 含义 | 建议动作 |
+|---|---|---|
+| 100~200% | 4 要素覆盖完整，commodity 度高 | **重点谈判靶心**——数据最可信 |
+| 200~500% | 模组件/装配组件 | 拆到件级再做 Should Cost |
+| 500%+ | IC/光学/电池等"成品模块" | 不适用 4 要素，应用元器件 BOM 查询 |
 
 ---
 
@@ -414,7 +461,7 @@ AIHUBMIX_API_KEY=xxx AIHUBMIX_MODEL=gpt-4o python scripts/fetch_fcc.py ocr "石�
 | `user_value_weight.flagship` | float `0~1` | 旗舰档（≥ ¥4000 / 全功能基站）下的价值权重 |
 | `dfma_levers` | array | 该桶可用的 DFMA 设计抓手清单（降级/合并/工艺简化） |
 
-> 同一个桶在不同档位的权重通常不同。例如能源桶 `entry=0.8 / flagship=0.6`：入门机靠续航完成全屋清扫，旗舰机有基站随时回充。`/dfma` 命令按产品档位自动选取对应权重计算价值成本比。
+> 同一个桶在不同档位的权重通常不同。例如能源桶 `entry=0.8 / flagship=0.6`：入门机靠续航完成全屋清扫，旗舰机有基站随时回充。`/function` 子 agent 按产品档位自动选取对应权重计算价值成本比（底层调用已合并的 `dfma_analysis` 工具）。
 
 ---
 

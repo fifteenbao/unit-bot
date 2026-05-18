@@ -35,6 +35,7 @@ from core.bucket_framework import (
     bucket_pct_range,
     estimate_level1_costs,
 )
+from core.process_lib import query_processes, query_molds, query_tooling
 
 DATA_DIR  = ROOT / "data"
 PARTS_FILE = DATA_DIR / "lib" / "standard_parts.json"
@@ -80,6 +81,230 @@ def _build_lib_index() -> dict[str, list[dict]]:
 
 def _norm(s: str) -> str:
     return re.sub(r"[\s/+\-·()（）]+", "", (s or "")).lower()
+
+
+# ── Should Cost 估算 (材料 + 工艺 + 模具 + 工具 + 利润) ──────────────
+
+_MOLD_RE = re.compile(r"模号[：:]\s*([A-Za-z0-9\-]+)")
+
+# 工艺识别 → process_id
+# 注意 1: 标件 (螺丝/螺钉/卡扣) 必须先于 spec 中的 "镀彩锌" 关键词匹配，避免把成品紧固件识别成镀锌工序
+# 注意 2: 紧固件的镀层成本已含在 aux_price 内，aggregate 只算装配时间 (P_FAST_SCREW)
+_NAME_FIRST_HINTS = [
+    (r"螺丝|螺钉|螺柱|铆钉",       "P_FAST_SCREW"),
+    (r"卡扣",                     "P_FAST_SNAP"),
+]
+_SPEC_HINTS = [
+    (r"注塑",                     "P_INJ_S"),
+    (r"CNC|车削|铣削",            "P_CNC_T"),
+    (r"压铸",                     "P_DIE_CAST"),
+    (r"钣金|冲压",                "P_STAMP"),
+    (r"镀彩锌|彩锌",              "P_PLATE_ZN"),
+    (r"镀镍|镀金",                "P_PLATE_NI"),
+    (r"PCBA组件|主板.*组件",      "P_SMT"),       # 组件级才算 P_SMT（避免 PCBA 名字重复触发）
+    (r"PCB(?!A)",                "P_PCB_2L"),
+    (r"硅胶",                     "P_SIL_COMP"),
+    (r"泡棉|EVA",                 "P_SIL_FOAM"),
+    (r"线束|连接线",              "P_WIRE"),
+]
+
+
+def _identify_process(name: str, spec: str) -> str | None:
+    # 先按名称识别成品标件（避免被 spec 中的工艺关键词误判）
+    for pat, pid in _NAME_FIRST_HINTS:
+        if re.search(pat, name):
+            return pid
+    blob = f"{name} {spec}"
+    for pat, pid in _SPEC_HINTS:
+        if re.search(pat, blob):
+            return pid
+    return None
+
+
+def _process_unit_cost(process_id: str) -> float:
+    rows = query_processes(process_id=process_id)
+    if not rows:
+        return 0.0
+    r = rows[0]
+    try:
+        cycle = float(r.get("typical_cycle_sec") or 0)
+        rate  = float(r.get("hourly_rate_cny") or 0)
+        scrap = float(r.get("scrap_rate_pct") or 0)
+    except ValueError:
+        return 0.0
+    if cycle <= 0 or rate <= 0:
+        return 0.0
+    base = cycle * rate / 3600
+    return base / max(1 - scrap / 100, 0.5)  # 摊到良品
+
+
+def _mold_unit_cost(spec: str) -> tuple[float, str]:
+    """从 spec 字符串里抓"模号:XXX"并查库摊销。BOM 多数件不写模号，此时回退到 _default_mold_cost_by_process()。"""
+    m = _MOLD_RE.search(spec or "")
+    if not m:
+        return 0.0, ""
+    mid = m.group(1)
+    rows = query_molds(mold_id=mid)
+    if not rows:
+        return 0.0, mid
+    try:
+        return float(rows[0].get("unit_amortization_cny") or 0), mid
+    except ValueError:
+        return 0.0, mid
+
+
+# 按工艺默认模具摊销 (元/件) — 行业中位估算
+# 当 spec 没写"模号:XXX"或库未命中时，按工艺类型给一个真实中位值
+# 标定参照（扫地机实际）：
+#   小精密齿轮模 6-8w / 800k 件 → 0.08-0.10
+#   小结构件模  10w  / 500k 件 → 0.20
+#   中件模     20w  / 400k 件 → 0.50
+#   大件外壳模 35w  / 300k 件 → 1.20  (面壳/底盘/底壳/基站外壳)
+#   共模 1+1   15w  / 500k×2 件 → 0.15
+_DEFAULT_MOLD_COST = {
+    "P_INJ_S":      0.10,   # 小件注塑 (< 50g)
+    "P_INJ_M":      0.50,   # 中件注塑 (50~300g)
+    "P_INJ_L":      1.20,   # 大件注塑 (> 300g)，外壳类
+    "P_INJ_DOUBLE": 0.15,   # 共模 1+1 (左右件/上下件)
+    "P_SIL_COMP":   0.05,   # 硅胶模压模
+    "P_SIL_FOAM":   0.01,   # 模切刀模
+    "P_STAMP":      0.03,   # 冲压钣金模具
+    "P_DIE_CAST":   0.80,   # 压铸模 (Al/Zn 合金件)
+    "P_CNC_T":      0.0,    # CNC 无模具（计入 tooling 刀具折旧）
+    "P_CNC_M":      0.0,
+    "P_PCB_2L":     0.0,    # PCB 无模具 (SMT 钢网在 tooling)
+    "P_PCB_4L":     0.0,
+}
+
+
+def _default_mold_cost_by_process(process_id: str | None) -> float:
+    if not process_id:
+        return 0.0
+    return _DEFAULT_MOLD_COST.get(process_id, 0.0)
+
+
+# 按工艺默认材料成本 (元/件) — 当 BOM 不给重量/几何尺寸时的回退基线
+# 标定参照：常见塑料 ~10 元/kg, 金属 ~20 元/kg, 硅胶 ~30 元/kg
+_DEFAULT_MATERIAL_COST = {
+    "P_INJ_S":       0.5,   # 50g 注塑件 × 10 元/kg
+    "P_INJ_M":       2.5,   # 250g
+    "P_INJ_L":       7.0,   # 700g 大件外壳
+    "P_INJ_DOUBLE":  1.5,   # 共模 平均件重
+    "P_SIL_COMP":    0.3,   # 10g 硅胶 × 30 元/kg
+    "P_SIL_FOAM":    0.2,   # EVA / 泡棉小片
+    "P_CNC_T":       1.0,   # 不锈钢小轴
+    "P_CNC_M":       3.0,   # 金属结构件
+    "P_DIE_CAST":    4.0,   # 铝锌合金件 ~200g × 20 元/kg
+    "P_STAMP":       0.8,   # 钣金小件
+    "P_WIRE":        1.5,   # 线材 + 端子 + 护套
+    "P_PCB_2L":      1.0,   # 小 PCB 板基材
+    "P_PCB_4L":      2.5,
+    # 装配类无独立材料 (材料已计入被装配件)
+    "P_PLATE_ZN":    0.0, "P_PLATE_NI": 0.0,
+    "P_FAST_SCREW":  0.0, "P_FAST_SNAP": 0.0, "P_BOND": 0.0, "P_WELD_SOLDER": 0.0,
+    "P_SMT":         0.0, "P_DIP": 0.0,
+}
+
+
+def _default_material_cost(process_id: str | None) -> float:
+    if not process_id:
+        return 0.0
+    return _DEFAULT_MATERIAL_COST.get(process_id, 0.0)
+
+
+def _tooling_unit_cost(process_id: str | None) -> float:
+    if not process_id:
+        return 0.0
+    rows = query_tooling(bound_process=process_id)
+    return sum(
+        float(r.get("unit_depreciation_cny") or 0) for r in rows
+    )
+
+
+def _row_qty(row: dict) -> int:
+    try:
+        return max(int(float(row.get("qty") or 1)), 1)
+    except (ValueError, TypeError):
+        return 1
+
+
+# Batch-级 tooling (按板/按 PCBA 计，不按板上元件数计)
+_BATCH_PROCESSES = {"P_SMT", "P_PCB_2L", "P_PCB_4L", "P_DIP"}
+
+
+def aggregate_should_cost(
+    leaf: dict, current_price: float,
+) -> dict:
+    """聚合 leaf + 其 _descendants (L3/L4/L5 子件) 的 Should Cost 组件。
+
+    Should Cost = 材料 + 加工 + 模具摊销 + 工具折旧 + 12% 合理利润
+    五要素全部从工艺基线 + 默认值算出，**不再用 current_price 反推 implied_material**——
+    保证 Should Cost 独立于 lib 查价，gap% 反映真实谈判空间。
+
+    工艺/模具/材料按"件内份数"累加；
+    Batch-级 tooling (SMT 钢网 / PCBA 治具) 在同一 leaf 内仅算一次。
+    """
+    rows = [leaf] + list(leaf.get("_descendants", []))
+    process_cost = mold_cost = tooling_cost = material_cost = 0.0
+    pids: list[str] = []
+    mids: list[str] = []
+    hit_count = 0
+    seen_batch_tooling: set[str] = set()
+
+    for r in rows:
+        q = _row_qty(r)
+        pid = _identify_process(r.get("name", ""), r.get("spec", ""))
+        if pid:
+            process_cost += _process_unit_cost(pid) * q
+            material_cost += _default_material_cost(pid) * q
+            # 批处理工艺的 tooling 在 leaf 内仅算一次
+            if pid in _BATCH_PROCESSES:
+                if pid not in seen_batch_tooling:
+                    seen_batch_tooling.add(pid)
+                    tooling_cost += _tooling_unit_cost(pid)
+            else:
+                tooling_cost += _tooling_unit_cost(pid) * q
+            pids.append(pid)
+            hit_count += 1
+        # 模具摊销：① 优先从 spec 字符串"模号:XXX"查 molds.csv  ② 回退到按工艺默认摊销
+        mc, mid = _mold_unit_cost(r.get("spec", ""))
+        if mid and mc:
+            mids.append(mid)
+            mold_cost += mc * q
+            hit_count += 1
+        elif pid and pid in _DEFAULT_MOLD_COST:
+            default_mc = _default_mold_cost_by_process(pid)
+            if default_mc > 0:
+                mold_cost += default_mc * q
+                mids.append(f"DEFAULT({pid})")
+                hit_count += 1
+
+    sub_total = material_cost + process_cost + mold_cost + tooling_cost
+    if sub_total == 0:
+        return {
+            "should_cost":      0.0, "covered": False,
+            "process_ids":      pids, "mold_ids": mids,
+            "process_cost":     0, "mold_cost": 0, "tooling_cost": 0,
+            "profit":           0, "material_cost": 0,
+            "descendant_hits":  hit_count,
+            "descendant_count": len(rows) - 1,
+        }
+
+    profit = sub_total * 0.12
+    should_cost = sub_total + profit  # 不再用 current_price 反推；material 已含在 sub_total
+    return {
+        "should_cost":      round(should_cost, 3),
+        "covered":          True,
+        "process_ids":      pids,
+        "mold_ids":         mids,
+        "material_cost":    round(material_cost, 3),
+        "process_cost":     round(process_cost, 3),
+        "mold_cost":        round(mold_cost, 3),
+        "tooling_cost":     round(tooling_cost, 3),
+        "profit":           round(profit, 3),
+        "descendant_hits":  hit_count,
+        "descendant_count": len(rows) - 1,
+    }
 
 
 def _lookup_price(
@@ -225,6 +450,13 @@ def load_mfg_bom(path: Path) -> list[dict]:
         else:
             is_leaf = True
         if is_leaf:
+            # 收集所有层级更深的后代行 (L3/L4/L5)，供 Should Cost 递归聚合用
+            descendants = []
+            for j in range(i + 1, len(parsed)):
+                if parsed[j]["level"] <= lvl:
+                    break
+                descendants.append(parsed[j])
+            row["_descendants"] = descendants
             leaves.append(row)
 
     return leaves
@@ -260,6 +492,15 @@ def analyze(bom_path: Path, msrp: float | None, model: str) -> None:
         if not name or name.startswith("晓舞") or name.startswith("C33"):
             continue
 
+        # 包材已移出 7 桶框架（归一级"仓储物流成本"），不归桶也不计 unclassified
+        if re.search(
+            r"包材|包装|外箱|彩箱|说明书|保护袋|保护膜|保护套|"
+            r"中托|上托|下托|纸托|斜坡垫|气泡膜|干燥剂|"
+            r"PET.*胶带|固定胶带|条纹.*胶带",
+            name,
+        ):
+            continue
+
         # 辅料检测
         if is_aux(name):
             unit_price = aux_price(name, spec)
@@ -268,12 +509,20 @@ def analyze(bom_path: Path, msrp: float | None, model: str) -> None:
             except (ValueError, TypeError):
                 qty = 1
             line_cost = unit_price * qty
-            # 辅料归入 structure_cmf
+            # 辅料归入 structure_cmf — 也算 Should Cost (主要命中螺丝/卡扣类)
+            sc = aggregate_should_cost(row, unit_price)
             bucket_cost["structure_cmf"] += line_cost
             bucket_items["structure_cmf"].append({
                 "name": name, "spec": spec, "qty": qty,
                 "unit_price": unit_price, "line_cost": line_cost,
                 "src": "aux", "sourcing": sourcing,
+                "should_cost":      sc["should_cost"],
+                "should_cost_line": sc["should_cost"] if sc["covered"] else 0,
+                "sc_covered":       sc["covered"],
+                "process_ids":      sc["process_ids"],
+                "mold_ids":         sc["mold_ids"],
+                "descendant_hits":  sc["descendant_hits"],
+                "descendant_count": sc["descendant_count"],
             })
             continue
 
@@ -307,12 +556,20 @@ def analyze(bom_path: Path, msrp: float | None, model: str) -> None:
             used_ids[bucket],
         )
         line_cost = unit_price * qty
+        sc = aggregate_should_cost(row, unit_price)
         bucket_cost[bucket] += line_cost
         bucket_items[bucket].append({
             "name": name, "spec": spec[:40] if spec else "",
             "qty": qty, "unit_price": unit_price,
             "line_cost": line_cost, "src": src,
             "sourcing": sourcing,
+            "should_cost":      sc["should_cost"],
+            "should_cost_line": sc["should_cost"] * qty if sc["covered"] else 0,
+            "sc_covered":       sc["covered"],
+            "process_ids":      sc["process_ids"],
+            "mold_ids":         sc["mold_ids"],
+            "descendant_hits":  sc["descendant_hits"],
+            "descendant_count": sc["descendant_count"],
         })
 
     # 地板保护
@@ -354,6 +611,44 @@ def analyze(bom_path: Path, msrp: float | None, model: str) -> None:
         for it in items[:8]:
             src_tag = f"({it['src']})" if not it['src'].startswith("lib:") else ""
             print(f"    ¥{it['line_cost']:>6.1f}  {it['name'][:30]:<30}  ×{it['qty']}  {src_tag}")
+
+    # ── Should Cost 对比 (新) ────────────────────────────────────────
+    print(f"\n{'─'*60}")
+    print("  Should Cost vs 估算价  (递归 L3+ 子件 → process/mold/tooling)")
+    print(f"{'─'*60}")
+    print(f"  {'桶':<20} {'估算价':>8} {'Should':>8} {'gap%':>6} {'覆盖':>6} {'子件命中':>10}")
+    print(f"  {'-'*66}")
+    total_est = total_sc = total_covered = total_items = 0
+    total_hits = total_descendants = 0
+    for bkt, name_cn in BUCKETS:
+        items = bucket_items.get(bkt, [])
+        if not items:
+            continue
+        est = sum(it["line_cost"] for it in items)
+        sc  = sum(it["should_cost_line"] for it in items)
+        cov = sum(1 for it in items if it["sc_covered"])
+        hits = sum(it.get("descendant_hits", 0) for it in items)
+        desc = sum(it.get("descendant_count", 0) for it in items)
+        cov_pct = cov / len(items) * 100 if items else 0
+        if sc == 0:
+            # 桶内无任何件能命中 process/mold/tooling（典型如能源桶的锂电池——
+            # 已是成品模块，不适合 4 要素 Should Cost 模型）
+            hit_str = f"{hits}/{desc}" if desc else "—"
+            print(f"  {name_cn:<20} {est:>8.1f} {'—':>8} {'—':>6} {cov_pct:>5.0f}% {hit_str:>10}  (成品模块/未覆盖)")
+            total_items += len(items)
+            continue
+        gap = (est - sc) / sc * 100 if sc else 0
+        flag = " ⚠虚高" if gap > 25 else (" 💡欠估" if gap < -25 else "")
+        hit_str = f"{hits}/{desc}" if desc else "—"
+        print(f"  {name_cn:<20} {est:>8.1f} {sc:>8.1f} {gap:>5.0f}% {cov_pct:>5.0f}% {hit_str:>10}{flag}")
+        total_est += est; total_sc += sc; total_covered += cov; total_items += len(items)
+        total_hits += hits; total_descendants += desc
+    if total_sc:
+        gap = (total_est - total_sc) / total_sc * 100
+        hit_str = f"{total_hits}/{total_descendants}"
+        print(f"  {'-'*66}")
+        print(f"  {'合计 (仅覆盖件)':<20} {total_est:>8.1f} {total_sc:>8.1f} {gap:>5.0f}% "
+              f"{total_covered}/{total_items}件  L3+子件命中 {hit_str}")
 
     # ── 未归桶件 ─────────────────────────────────────────────────────
     if unclassified:

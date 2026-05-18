@@ -28,6 +28,14 @@ def render_md(product_key: str, stage_title: str, data: dict[str, Any]) -> str:
             sup = " / ".join(p["key_suppliers"]) if isinstance(p["key_suppliers"], list) else p["key_suppliers"]
             lines.append(f"- **关键供应商**：{sup}")
         lines.append(f"- **集成难度**：{p.get('integration_difficulty','-')} | **成本对比**：{p.get('expected_cost_vs_current','-')}")
+        if p.get("process_id_candidate"):
+            lines.append(f"- **新工艺候选**：`{p['process_id_candidate']}`")
+        if p.get("cost_evidence"):
+            lines.append(f"- **成本依据**：{p['cost_evidence']}")
+        if p.get("evidence_from_trim"):
+            lines.append(f"- **trim 引用**：{p['evidence_from_trim']}")
+        if p.get("user_pain_ref"):
+            lines.append(f"- **用户痛点引用**：{p['user_pain_ref']}")
         if p.get("risks"):
             risks = " / ".join(p["risks"]) if isinstance(p["risks"], list) else p["risks"]
             lines.append(f"- **风险**：{risks}")

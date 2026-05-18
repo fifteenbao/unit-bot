@@ -12,33 +12,39 @@ def render_md(product_key: str, stage_title: str, data: dict[str, Any]) -> str:
     fm = data.get("function_model", [])
     if fm:
         lines.append("## 功能-载体模型\n")
-        lines.append("| 功能 | 类型 | 载体 | 价值 | 成本占比 | V/C |")
-        lines.append("|------|------|------|------|---------|-----|")
+        lines.append("| 功能 | 类型 | 载体 | V | C | V/C | 价值证据 | 成本证据 |")
+        lines.append("|------|------|------|---|---|-----|---------|---------|")
         for f in fm:
             carriers = " / ".join(f.get("carriers", [])) if isinstance(f.get("carriers"), list) else f.get("carriers", "")
             lines.append(
                 f"| {f.get('function','')} | {f.get('function_type','')} | "
                 f"{carriers} | {f.get('value_score','-')} | {f.get('cost_share','-')} | "
-                f"**{f.get('v_over_c','-')}** |"
+                f"**{f.get('v_over_c','-')}** | {f.get('value_evidence','')} | {f.get('cost_evidence','')} |"
             )
         lines.append("")
 
     od = data.get("over_design", [])
     if od:
         lines.append("## 过设计（V/C < 0.8）\n")
-        lines.append("| 功能 | 载体 | V/C | 证据 |")
-        lines.append("|------|------|-----|------|")
+        lines.append("| 功能 | 载体 | V/C | 证据引用 | 证据 |")
+        lines.append("|------|------|-----|---------|------|")
         for o in od:
-            lines.append(f"| {o.get('function','')} | {o.get('carrier','')} | {o.get('v_over_c','-')} | {o.get('evidence','')} |")
+            lines.append(
+                f"| {o.get('function','')} | {o.get('carrier','')} | {o.get('v_over_c','-')} | "
+                f"{o.get('evidence_ref','')} | {o.get('evidence','')} |"
+            )
         lines.append("")
 
     ud = data.get("under_design", [])
     if ud:
         lines.append("## 欠设计（V/C > 1.2）\n")
-        lines.append("| 功能 | 用户痛点 | 证据 |")
-        lines.append("|------|---------|------|")
+        lines.append("| 功能 | 用户痛点 | 证据引用 | 证据 |")
+        lines.append("|------|---------|---------|------|")
         for u in ud:
-            lines.append(f"| {u.get('function','')} | {u.get('user_pain','')} | {u.get('evidence','')} |")
+            lines.append(
+                f"| {u.get('function','')} | {u.get('user_pain','')} | "
+                f"{u.get('evidence_ref','')} | {u.get('evidence','')} |"
+            )
         lines.append("")
 
     fr = data.get("function_redundancy", [])

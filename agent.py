@@ -880,6 +880,39 @@ def tool_query_materials(
     }, ensure_ascii=False, indent=2)
 
 
+def tool_query_processes(
+    keyword: str | None = None,
+    category: str | None = None,
+    process_id: str | None = None,
+) -> str:
+    """查询 data/lib/processes.csv 工艺库（注塑/CNC/电镀/PCB/SMT/线束/紧固件 等 22 条）。"""
+    from core.process_lib import query_processes
+    results = query_processes(keyword=keyword, category=category, process_id=process_id)
+    return json.dumps({"total": len(results), "processes": results}, ensure_ascii=False, indent=2)
+
+
+def tool_query_molds(
+    keyword: str | None = None,
+    mold_id: str | None = None,
+    bucket: str | None = None,
+) -> str:
+    """查询 data/lib/molds.csv 模具库（用户维护，按内部脱敏编号命名 mold_id）。"""
+    from core.process_lib import query_molds
+    results = query_molds(keyword=keyword, mold_id=mold_id, bucket=bucket)
+    return json.dumps({"total": len(results), "molds": results}, ensure_ascii=False, indent=2)
+
+
+def tool_query_tooling(
+    keyword: str | None = None,
+    category: str | None = None,
+    bound_process: str | None = None,
+) -> str:
+    """查询 data/lib/tooling.csv 夹具/刀具库（注塑机模架/CNC 刀具/电镀挂具/SMT 钢网/端子压接模 等 21 条）。"""
+    from core.process_lib import query_tooling
+    results = query_tooling(keyword=keyword, category=category, bound_process=bound_process)
+    return json.dumps({"total": len(results), "tooling": results}, ensure_ascii=False, indent=2)
+
+
 def tool_query_suppliers(
     keyword: str | None = None,
     category: str | None = None,
@@ -1781,6 +1814,55 @@ CLIENT_TOOLS: list[dict] = [
         },
     },
     {
+        "name": "query_processes",
+        "description": (
+            "查询工艺库（data/lib/processes.csv），拿 Should Cost ②加工成本基线。"
+            "包含 22 条：注塑 S/M/L/共模 + CNC 车铣 + 压铸 + 钣金 + 镀彩锌/镀镍 + PCB + SMT/DIP + 线束 + 紧固件/卡扣/粘接。\n"
+            "每条含 cycle_sec / hourly_rate_cny / scrap_rate_pct / applicable_materials。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "keyword":    {"type": "string", "description": "工艺名称/适用材料/备注模糊搜"},
+                "category":   {"type": "string", "description": "塑料成型/金属加工/表面处理/电子/装配/橡塑成型/材料加工"},
+                "process_id": {"type": "string", "description": "精确匹配，如 P_INJ_S / P_CNC_T / P_PLATE_ZN"},
+            },
+        },
+    },
+    {
+        "name": "query_molds",
+        "description": (
+            "查询模具库（data/lib/molds.csv），拿 Should Cost ③模具摊销。"
+            "由用户按内部脱敏编号维护 mold_id（如 MOLD-INJ-S-001、MOLD-INJ-L-007 等），"
+            "字段含 cavity_count / lifetime_cycles / unit_amortization_cny / related_parts。"
+            "related_parts 含 \" / \" 分隔的多件 → 即共模件（1+1 / 2+2 等）。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "keyword": {"type": "string", "description": "模号/相关件/备注模糊搜"},
+                "mold_id": {"type": "string", "description": "精确匹配模号（用户脱敏编号）"},
+                "bucket":  {"type": "string", "description": "BOM 桶过滤，如 '7_整机结构CMF'"},
+            },
+        },
+    },
+    {
+        "name": "query_tooling",
+        "description": (
+            "查询夹具/刀具库（data/lib/tooling.csv），拿 Should Cost ④工具折旧。"
+            "包含 21 条：注塑机模架/CNC 刀具/CNC 虎钳/压铸模架/冲压模具/电镀挂具/SMT 钢网/DIP 载具/线束端子压接模/盐雾测试设备 等。"
+            "每条含 acquisition_cost / lifetime_units / unit_depreciation_cny。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "keyword":       {"type": "string", "description": "名称/适用件/备注模糊搜"},
+                "category":      {"type": "string", "description": "夹具 / 刀具 / 量测"},
+                "bound_process": {"type": "string", "description": "对应工艺 process_id，如 'P_INJ_S' / 'P_SMT' / 'P_PLATE_ZN'"},
+            },
+        },
+    },
+    {
         "name": "query_suppliers",
         "description": (
             "查询供应商库（data/lib/suppliers.csv），了解各BOM桶的核心供应商、档次和采购条件。\n"
@@ -2048,6 +2130,15 @@ CLIENT_DISPATCH = {
     ),
     "query_materials":         lambda a: tool_query_materials(
         a.get("keyword"), a.get("mat_type"), a.get("bom_bucket")
+    ),
+    "query_processes":         lambda a: tool_query_processes(
+        a.get("keyword"), a.get("category"), a.get("process_id")
+    ),
+    "query_molds":             lambda a: tool_query_molds(
+        a.get("keyword"), a.get("mold_id"), a.get("bucket")
+    ),
+    "query_tooling":           lambda a: tool_query_tooling(
+        a.get("keyword"), a.get("category"), a.get("bound_process")
     ),
     "query_suppliers":         lambda a: tool_query_suppliers(
         a.get("keyword"), a.get("category"), a.get("tier"), a.get("region")
