@@ -135,7 +135,7 @@ P 阶段（无依赖，可并行）
 - **只读不写业务库**：子 agent 不调用 `save_product` / `update_spec` / `upsert_component` 等写操作。所有写库由主 agent 在收到 JSON 后通过 `plans_store.save_stage()` 统一执行。
 - **输出格式**：必须以一段 ```json 代码块结束。`base.py` 的 `extract_json` 会优先从 ```json``` 块解析，失败则尝试整段文本里的最大花括号对象。
 - **失败兜底**：若子 agent 没返回有效 JSON，主 agent 返回 `status: error`，不污染 plans_db.json。
-- **OpenClaw 兼容**：`web_search` / `web_fetch` 是 Anthropic 服务端工具，OpenClaw 后端会自动剔除（在 [`agent.py`](../agent.py) 的 `_make_client()` 完成）。
+- **通用 agent 兼容**：项目默认按 Codex / Claude Code / OpenClaw 都可阅读和执行的方式组织；`web_search` / `web_fetch` 属于运行时可选能力，后端不支持时会自动剔除或降级（在 [`agent.py`](../agent.py) 的 `_make_client()` 完成）。
 
 ## 详细架构
 

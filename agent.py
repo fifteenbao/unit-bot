@@ -35,6 +35,7 @@ from core.db import (
     update_completeness,
     upsert_product,
 )
+from core.brand_aliases import detect_brand
 
 console = Console()
 
@@ -663,15 +664,22 @@ def tool_generate_teardown_csv(
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
+    money = audit.get("money", {})
+    buckets_money = money.get("buckets_money", {})
+    grand_total = money.get("grand_total", 0.0)
+    grand_total_with_aux = money.get("grand_total_with_aux", grand_total)
+
     return json.dumps({
         "status": "generated",
         "csv_path": str(csv_out),
         "rows": len(rows),
         "msrp": price,
-        "total_bom_cny": audit["total_actual_cny"],
-        "bom_rate_pct": round(audit["total_actual_cny"] / price * 100, 1),
-        "alerts": audit["alerts"],
-        "buckets": {k: v["actual_cny"] for k, v in audit["buckets"].items()},
+        "fcc_status": audit.get("fcc_status"),
+        "total_bom_cny": grand_total,
+        "total_bom_with_aux_cny": grand_total_with_aux,
+        "bom_rate_pct": round(grand_total_with_aux / price * 100, 1) if price else None,
+        "alerts": audit.get("alerts", []),
+        "buckets": {k: v.get("cost", 0) for k, v in buckets_money.items()},
     }, ensure_ascii=False, indent=2)
 
 
@@ -1437,52 +1445,29 @@ def tool_plans_status(product_key: str) -> str:
     return json.dumps(out, ensure_ascii=False)
 
 
-# ─── FCC 辅助（PCB 芯片识别） ──────────────────────────────────
-
-BRAND_FCC_CODE: dict[str, str] = {
-    "石头":     "2AN2O",
-    "roborock": "2AN2O",
-    "云鲸":     "2ARZZ",
-    "narwal":   "2ARZZ",
-    "追觅":     "2AX54",
-    "dreame":   "2AX54",
-    "科沃斯":   "2A6HE",
-    "ecovacs":  "2A6HE",
-}
-
-
 def _fcc_hint(model_name: str) -> str:
-    low = model_name.lower()
-    for keyword, code in BRAND_FCC_CODE.items():
-        if keyword in low:
-            # 尝试查海外型号（FCC 以海外型号申报）
-            brand_map = {
-                "石头": "Roborock", "roborock": "Roborock",
-                "云鲸": "Narwal",   "narwal":   "Narwal",
-                "追觅": "Dreame",   "dreame":   "Dreame",
-                "科沃斯": "Ecovacs","ecovacs":  "Ecovacs",
-            }
-            brand = brand_map.get(keyword)
-            global_name = None
-            try:
-                from core.model_aliases import cn_to_global, find_alias
-                global_name = cn_to_global(model_name, brand)
-                if not global_name:
-                    hits = find_alias(model_name, brand, top_k=1)
-                    if hits and hits[0].score >= 0.5:
-                        global_name = hits[0].global_model
-            except Exception:
-                pass
+    code, brand = detect_brand(model_name)
+    if code and brand:
+        global_name = None
+        try:
+            from core.model_aliases import cn_to_global, find_alias
+            global_name = cn_to_global(model_name, brand)
+            if not global_name:
+                hits = find_alias(model_name, brand, top_k=1)
+                if hits and hits[0].score >= 0.5:
+                    global_name = hits[0].global_model
+        except Exception:
+            pass
 
-            search_name = global_name or model_name
-            return (
-                f"FCC grantee code: {code}\n"
-                f"- 设备列表: https://fccid.io/{code}\n"
-                f"- 建议搜索型号: 「{search_name}」"
-                + (f"（国内型号 {model_name} 的海外对应款）" if global_name else "（未找到海外对应型号，用原名模糊搜索）")
-                + "\n- 进入最相近型号，用 web_fetch 抓取 Internal Photos 和 Block Diagram\n"
-                f"- 从照片识别 PCB 芯片型号（SoC/MCU/Wi-Fi/PMIC），从框图提取系统架构"
-            )
+        search_name = global_name or model_name
+        return (
+            f"FCC grantee code: {code}\n"
+            f"- 设备列表: https://fccid.io/{code}\n"
+            f"- 建议搜索型号: 「{search_name}」"
+            + (f"（国内型号 {model_name} 的海外对应款）" if global_name else "（未找到海外对应型号，用原名模糊搜索）")
+            + "\n- 进入最相近型号，用 web_fetch 抓取 Internal Photos 和 Block Diagram\n"
+            f"- 从照片识别 PCB 芯片型号（SoC/MCU/Wi-Fi/PMIC），从框图提取系统架构"
+        )
     return ""
 
 

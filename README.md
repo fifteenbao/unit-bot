@@ -2,6 +2,8 @@
 
 > **扫地机器人 PLANS 价值设计平台** — 12 个独立子 agent，串成一条从竞品研究到体系建设的极致降本工作流。
 
+This repo is also configured for Codex, Claude Code, OpenClaw, and similar coding agents. See [AGENTS.md](AGENTS.md) for the shared operating guide.
+
 ```
 P 现状研究  →  L 精益设计  →  A 先进裁剪  →  N 价值创新  →  S 体系建设
 3 agent       2 agent (DFMA)  2 agent (TRIZ)  3 agent       2 agent
@@ -123,24 +125,20 @@ Should Cost vs 估算价  (递归 L3+ 子件 → process/mold/tooling)
 合计 (仅覆盖件)         1305.7    379.7   244% 133/166件  L3+子件命中 645/736
 ```
 
-- `估算价`：来自 `components_lib.csv` 的查价结果（接近**整机厂入库 BOM 价**，含一级/二级供应商加价）
-- `Should Cost`：**件级理论制造下限** —— 五要素独立求和，**不依赖 lib 查价**：
-  - ① 材料：按工艺基线 (`P_INJ_S=¥0.5/件`、`P_INJ_L=¥7/件` 等)
-  - ② 加工：`query_processes` cycle_sec × hourly_rate / 3600
-  - ③ 模具摊销：`query_molds` 命中优先，未命中回退到工艺级默认 (`P_INJ_L=¥1.20/件`、`P_INJ_S=¥0.10/件`)
-  - ④ 工具折旧：`query_tooling` 按 process_id 累加
-  - ⑤ 合理利润：sub × 12%
-- `gap%` 解读：估算价 / Should Cost 倍数，反映**件级原料工艺成本 → 整机厂入库价**的供应链加价空间：
-  - gap 100~200% (即 lib 是 SC 的 2~3 倍)：4 要素覆盖完整、件级 commodity 度高 → **谈判空间最小**（最可信的成本数据）
-  - gap 200~500%：模组件 / 装配组件，含可观的装配 QC 集成成本
-  - gap 500%+：芯片/光学/电池等"成品模块"，4 要素不适用 → 应改用 BOM 查询
-- `覆盖`：本桶 L2 叶子件中能命中 process/mold/tooling 的比例
-- `子件命中`：递归 L3/L4/L5 子件后实际命中的 (hits / descendants)
+- `估算价`：来自 `components_lib.csv`，近似整机厂入库 BOM 价。
+- `Should Cost`：材料 + 加工 + 模具摊销 + 工具折旧 + 合理利润，独立于 `components_lib.csv` 查价。
+- `gap%`：估算价相对 Should Cost 的溢价比例。
+
+  ```text
+  gap% = (估算价 - Should Cost) / Should Cost × 100%
+  ```
+
+  例如 `gap=106%` 表示估算价约为 Should Cost 的 2.06 倍。
+- `覆盖` / `子件命中`：表示本桶有多少子件能命中工艺、模具、工具数据；覆盖越高，Should Cost 越可信。
 
 #### 解读：哪个桶最值得做 DFM 谈判？
 
-`整机结构 CMF` gap=106% 是**最可信的谈判靶心**——4 要素覆盖最完整，gap 反映的就是供应商真实毛利空间。
-`算力与电子` gap=1213% 不要直接解读为"虚高"——SoC/RAM/ROM 等 IC 件没有"成型工艺"，gap 大是模型设计使然，应改用元器件 BOM 查询而非 Should Cost。
+结构件、注塑件、五金件等工艺覆盖完整的桶，更适合用 Should Cost 做谈判锚点。芯片、光学、电池等成品模块不适合直接套材料+加工模型，应改用元器件 BOM 或市场报价对标。
 
 ---
 

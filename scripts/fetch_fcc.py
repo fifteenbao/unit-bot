@@ -45,43 +45,7 @@ FCC_DIR = ROOT / "data" / "teardowns" / "fcc"
 
 sys.path.insert(0, str(ROOT))
 
-# ── 品牌 FCC Grantee Code ──────────────────────────────────────────
-# Grantee Code 是 FCC ID 的前 3~5 位，唯一标识申请品牌/公司
-BRAND_FCC_CODE: dict[str, str] = {
-    "石头":         "2AN2O",  # Roborock (Beijing Roborock Technology)
-    "roborock":     "2AN2O",
-    "云鲸":         "2ARZZ",  # Narwal (Shanghai Gaussian Robotics)
-    "narwal":       "2ARZZ",
-    "追觅":         "2AX54",  # Dreame Technology
-    "dreame":       "2AX54",
-    "科沃斯":       "2A6HE",  # Ecovacs Robotics
-    "ecovacs":      "2A6HE",
-    "卧安":         "2AKXB",  # 卧安科技 SwitchBot (Woan Technology Shenzhen)
-    "switchbot":    "2AKXB",
-    "woan":         "2AKXB",
-    "杉川":         "2A9W4",  # 杉川机器人 (Shenzhen 3irobotics Co., Ltd.)
-    "3irobotics":   "2A9W4",
-    "安克":         "2AOKB",  # 安克创新 Eufy / Anker Innovations
-    "eufy":         "2AOKB",
-    "小米":         "2AFZZ",  # 小米 Xiaomi
-    "xiaomi":       "2AFZZ",
-    "必胜":         "2AS9L",  # Bissell
-    "bissell":      "2AS9L",
-    "irobot":       "UFE",    # iRobot（3 位早期代码）
-}
-
-BRAND_NAMES: dict[str, str] = {
-    "石头":         "Roborock",    "roborock":     "Roborock",
-    "云鲸":         "Narwal",      "narwal":       "Narwal",
-    "追觅":         "Dreame",      "dreame":       "Dreame",
-    "科沃斯":       "Ecovacs",     "ecovacs":      "Ecovacs",
-    "卧安":         "SwitchBot",   "switchbot":    "SwitchBot",   "woan": "SwitchBot",
-    "杉川":         "3irobotics",  "3irobotics":   "3irobotics",
-    "安克":         "Eufy",        "eufy":         "Eufy",
-    "小米":         "Xiaomi",      "xiaomi":       "Xiaomi",
-    "必胜":         "Bissell",     "bissell":      "Bissell",
-    "irobot":       "iRobot",
-}
+from core.brand_aliases import detect_brand  # noqa: E402
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
 FCCID_BASE   = "https://fccid.io"    # 文档列表解析（静态 HTML）
@@ -92,14 +56,6 @@ FCC_REPORT   = "https://fcc.report"  # PDF 实际下载（完整文件）
 
 def _slug(model: str) -> str:
     return re.sub(r"[\s\-]+", "", model)
-
-
-def _detect_brand(model: str) -> tuple[str | None, str | None]:
-    low = model.lower()
-    for kw, code in BRAND_FCC_CODE.items():
-        if kw in low:
-            return code, BRAND_NAMES.get(kw)
-    return None, None
 
 
 def _global_name(model: str, brand: str | None) -> str | None:
@@ -407,7 +363,7 @@ def _parse_parts(text: str) -> list[dict]:
 
 def fetch_fcc(model: str, fcc_id_override: str | None = None,
               download_only: bool = False) -> dict:
-    grantee_code, brand = _detect_brand(model)
+    grantee_code, brand = detect_brand(model)
     if not grantee_code and not fcc_id_override:
         raise ValueError("无法识别品牌 FCC code，请通过 --fcc-id 手动指定")
 
@@ -597,7 +553,7 @@ def cmd_find(model: str, fcc_id_override: str | None, force: bool) -> None:
         print(f"\n  下一步: python scripts/fetch_fcc.py ocr \"{model}\"")
         return
 
-    grantee_code, brand = _detect_brand(model)
+    grantee_code, brand = detect_brand(model)
     if not grantee_code and not fcc_id_override:
         print(f"✗ 无法识别品牌 FCC code，请通过 --fcc-id 手动指定", file=sys.stderr)
         sys.exit(1)

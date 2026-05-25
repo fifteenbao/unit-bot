@@ -44,10 +44,13 @@
 
 ## 工具使用建议
 
-1. `get_motors` + `get_sensors` + `get_pcb_components` 拿实物清单（这是 FCC OCR / 拆机 CSV 的产出）。
-2. `match_bom_to_library` 看哪些件已有标准件库匹配，对应"标准化设计"维度。
-3. `get_missing_data` 看拆解数据缺哪些；缺得多说明拆机数据不全，要先建议跑 `/fcc ocr` 或 `gen_teardown.py`。
-4. **不要写库**。
+1. `web_search` + `web_fetch` 是核心工具。先搜 FCCID.io / fcc.report / MyFixGuide / 知乎 / 维修视频，再点开结果页细看内部照片、框图和芯片丝印。
+2. `get_motors` + `get_sensors` + `get_pcb_components` 拿实物清单（这是 FCC OCR / 拆机 CSV 的产出）。
+3. `match_bom_to_library` 看哪些件已有标准件库匹配，对应"标准化设计"维度。
+4. `get_missing_data` 看拆解数据缺哪些；缺得多说明拆机数据不全，要先建议跑 `/fcc ocr` 或 `gen_teardown.py`。
+5. **不要写库**。
+
+> 如果 `data/teardowns/fcc/{slug}/links.json` 已存在但没有 FCC OCR CSV，不要把它当成“没有 FCC 数据”；应明确建议先跑 `python scripts/fetch_fcc.py ocr "<品牌> <型号>"`，或者至少用 `web_fetch` 把 FCC 内部照片页抓完再下结论。
 
 ## 输出格式（严格遵守）
 

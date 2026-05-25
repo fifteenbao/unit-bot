@@ -20,8 +20,6 @@ from datetime import date
 from pathlib import Path
 from typing import Optional
 
-import anthropic
-
 ROOT          = Path(__file__).parent.parent
 LIB_CSV       = ROOT / "data" / "lib" / "components_lib.csv"
 HISTORY_CSV   = ROOT / "data" / "lib" / "price_history.csv"
@@ -40,14 +38,11 @@ LIB_FIELDS = [
     "suppliers", "confidence", "models", "last_updated",
 ]
 
-
-# ── Anthropic 客户端 ────────────────────────────────────────────────
-
-def _client() -> anthropic.Anthropic:
-    return anthropic.Anthropic()
+sys.path.insert(0, str(ROOT))
+from core.web_agent import run_web_agent  # noqa: E402
 
 
-def _search_price(client: anthropic.Anthropic, row: dict) -> tuple[Optional[float], Optional[float], str]:
+def _search_price(row: dict) -> tuple[Optional[float], Optional[float], str]:
     """
     用 web_search 查询单个零件当前市场价。
     返回 (cost_min, cost_max, note)，查询失败返回 (None, None, 错误信息)。
@@ -95,21 +90,11 @@ def _search_price(client: anthropic.Anthropic, row: dict) -> tuple[Optional[floa
     )
 
     try:
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=512,
-            tools=[{
-                "name": "web_search",
-                "type": "web_search_20250305",
-            }],
-            messages=[{"role": "user", "content": prompt}],
+        system = (
+            "你是市场价格查询助手。你会先用 web_search 搜索零部件当前中国市场批量采购价，"
+            "再严格按用户要求输出 MIN/MAX/NOTE 三行结果。"
         )
-
-        # 提取文本输出
-        text = ""
-        for block in response.content:
-            if hasattr(block, "text"):
-                text += block.text
+        text = run_web_agent(system, prompt, max_tokens=512)
 
         min_m = re.search(r"MIN:\s*([\d.]+)", text)
         max_m = re.search(r"MAX:\s*([\d.]+)", text)
@@ -163,7 +148,6 @@ def main() -> None:
 
     print(f"开始价格更新：{len(target)} 条零件\n{'─'*60}")
 
-    client     = _client()
     history    = []
     updated    = 0
     skipped    = 0
@@ -177,7 +161,7 @@ def main() -> None:
 
         print(f"[{i:3d}/{len(target)}] {label}")
 
-        new_min, new_max, note = _search_price(client, row)
+        new_min, new_max, note = _search_price(row)
 
         if new_min is None:
             print(f"       ⚠ 跳过：{note}\n")

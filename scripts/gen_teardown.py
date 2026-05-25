@@ -44,6 +44,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os as _os
 import re
 import sys
 from pathlib import Path
@@ -79,11 +80,13 @@ from core.bom_rules import (  # noqa: E402
 )
 from core.components_lib import load_lib  # noqa: E402
 from core.auxiliary_parts import estimate_auxiliary_cost, get_bucket_default_price, AUX_DFMA_IMPACT  # noqa: E402
+from core.brand_aliases import normalize_fcc_slug  # noqa: E402
 from core.materials_lib import (  # noqa: E402
     structure_cmf_material_breakdown,
     print_structure_cmf_breakdown,
     load_suppliers,
 )
+from core.web_agent import run_web_agent  # noqa: E402
 
 # ── BOM 7桶 (从 core/bom_8bucket_framework.json 动态加载) ───────
 BUCKETS = buckets_ordered()                      # [(key, name_cn), ...]
@@ -216,18 +219,97 @@ def _norm_name(s: str) -> str:
     return re.sub(r"[\s/+\-·,，。、()（）]+", "", (s or "")).lower()
 
 
+def _find_fcc_slug_dir(slug: str) -> Path:
+    """容忍品牌后缀/中英文写法差异，寻找最接近的 FCC 子目录。"""
+    exact = FCC_DIR / slug
+    if exact.exists():
+        return exact
+    if not FCC_DIR.exists():
+        return exact
+
+    target = normalize_fcc_slug(slug)
+    for p in FCC_DIR.iterdir():
+        if not p.is_dir():
+            continue
+        cand = normalize_fcc_slug(p.name)
+        if cand and target and (cand in target or target in cand):
+            return p
+    return exact
+
+
 def load_fcc_rows(slug: str) -> list[dict]:
     """扫描 data/teardowns/fcc/{slug}/*_fcc_*.csv，返回最新文件的行列表。"""
-    fcc_slug_dir = FCC_DIR / slug
+    fcc_slug_dir = _find_fcc_slug_dir(slug)
     if not fcc_slug_dir.exists():
         return []
-    candidates = sorted(fcc_slug_dir.glob(f"{slug}_fcc_*.csv"))
+    candidates = sorted(fcc_slug_dir.glob("*_fcc_*.csv"))
     if not candidates:
         return []
     newest = candidates[-1]
     rows = load_csv(newest)
     print(f"  [Stage 0] FCC 上游：{newest.name}（{len(rows)} 条）")
     return rows
+
+
+def load_fcc_links(slug: str) -> dict:
+    """读取 fetch_fcc.py find 产出的 links.json，供 Stage 1 直接抓 FCC 页面。"""
+    fcc_slug_dir = _find_fcc_slug_dir(slug)
+    links_path = fcc_slug_dir / "links.json"
+    if not links_path.exists():
+        return {}
+    try:
+        data = json.loads(links_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"  ⚠ FCC links.json 读取失败: {e}")
+        return {}
+    docs = data.get("docs") or []
+    if docs:
+        print(f"  [Stage 0] FCC 链接：{data.get('fcc_id', slug)}（{len(docs)} 个文档，尚需 OCR/抓取）")
+    return data
+
+
+def _render_fcc_links_prompt(fcc_links: dict) -> str:
+    """把 FCC 文档链接注入 Stage 1 prompt，优先内部照片/测试报告/手册。"""
+    docs = fcc_links.get("docs") or []
+    if not docs:
+        return ""
+
+    priority_words = (
+        "internal", "block", "schematic", "test report", "antenna",
+        "label", "user manual", "external",
+    )
+
+    def _doc_rank(doc: dict) -> int:
+        title = doc.get("title", "").lower()
+        for idx, word in enumerate(priority_words):
+            if word in title:
+                return idx
+        return len(priority_words) + 1
+
+    selected = [d for d in docs if _doc_rank(d) <= len(priority_words)]
+    selected = sorted(selected, key=_doc_rank)[:8] or docs[:5]
+
+    lines = [
+        "",
+        "【FCC 文档链接 — 已找到但尚未形成 OCR CSV，务必优先 web_fetch】",
+        f"- FCC ID: {fcc_links.get('fcc_id', '')}",
+        f"- 搜索型号: {fcc_links.get('search_name') or fcc_links.get('model') or ''}",
+    ]
+    for d in selected:
+        title = d.get("title", "").strip() or "FCC document"
+        page = d.get("fccid_io_url") or d.get("page_url") or d.get("pdf_url") or ""
+        pdf = d.get("pdf_url") or ""
+        if page:
+            lines.append(f"- {title}: {page}")
+        if pdf and pdf != page:
+            lines.append(f"  PDF: {pdf}")
+    lines.append(
+        "注意：这些 FCC 页面可作为 source_url；若无法直接识别芯片丝印，"
+        "请在最终结果中把相关行保留为 inferred，并建议先运行 "
+        "`python scripts/fetch_fcc.py ocr \"<型号>\"`。"
+    )
+    lines.append("")
+    return "\n".join(lines)
 
 
 def _merge_fcc_first(fcc_rows: list[dict], discovery_rows: list[dict]) -> list[dict]:
@@ -245,524 +327,6 @@ def _merge_fcc_first(fcc_rows: list[dict], discovery_rows: list[dict]) -> list[d
     if dropped:
         print(f"  ✓ FCC 优先合并：保留 {len(fcc_rows)} 条 FCC 行，去重 {dropped} 条 web 行")
     return merged
-
-
-# ══════════════════════════════════════════════════════════════════
-#  通用 web_agent — 自动切换 backend
-#
-#  优先级：
-#    1. AIHUBMIX_API_KEY 存在 → OpenAI-compatible（aihubmix，带服务端 web_search）
-#    2. DEEPSEEK_API_KEY 存在  → DeepSeek 官方 API（多轮 agent loop，客户端 DuckDuckGo 搜索 + httpx 抓取）
-#    3. ANTHROPIC_API_KEY 存在 → Anthropic 原生（带 server-side web_search + web_fetch）
-# ══════════════════════════════════════════════════════════════════
-
-import os as _os
-
-_AIHUBMIX_KEY  = _os.environ.get("AIHUBMIX_API_KEY", "")
-_AIHUBMIX_BASE = _os.environ.get("AIHUBMIX_BASE_URL", "https://aihubmix.com/v1")
-_AIHUBMIX_MODEL = _os.environ.get("AIHUBMIX_MODEL", "gpt-5.4-mini")
-
-_DEEPSEEK_KEY  = _os.environ.get("DEEPSEEK_API_KEY", "")
-_DEEPSEEK_BASE = _os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
-_DEEPSEEK_MODEL = _os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
-
-# LLM web agent 上限控制 (避免 LLM 无限搜索浪费 token + 防止 messages 体积过大触发代理 TCP 断).
-# 用"工具调用总次数"而非"轮数" — 单轮可能并发 2-3 个 tool call, 按轮数会失控.
-# 撞上限不抛错: 注入"停止搜索"指令 + tool_choice="none" 让模型输出最终 JSON.
-_MAX_TOOL_CALLS = 6      # 工具调用总次数上限 (累计, 含 web_fetch + web_search)
-_MAX_AGENT_ROUNDS = 8    # 兜底硬上限 — 即使 LLM 不调工具但反复让脚本走流程也不超过这个
-
-# API 请求重试 (代理不稳/服务端断连时自动重试)
-_API_RETRY_MAX     = 2          # 最多重试 2 次 (共 3 次尝试)
-_API_RETRY_BACKOFF = (5, 15)    # 指数退避 (秒): 第 1 次重试等 5s, 第 2 次等 15s
-
-
-def _api_call_with_retry(call_fn, label: str = "API"):
-    """对 LLM API 调用做重试封装. 处理代理断连 / 临时网络抖动.
-
-    call_fn: 无参 callable, 调用一次 LLM API 返回 response 对象
-    label:   日志前缀 (如 "Anthropic" / "OpenAI")
-    """
-    import time
-    last_err = None
-    for attempt in range(_API_RETRY_MAX + 1):  # 0, 1, 2 = 共 3 次
-        try:
-            return call_fn()
-        except Exception as e:
-            last_err = e
-            err_str = str(e).lower()
-            # 只重试网络/连接类错误, 其他直接抛 (如 401/429/500)
-            is_network = any(k in err_str for k in (
-                "connection", "remoteprotocolerror", "timeout",
-                "disconnected", "ssl", "broken pipe",
-            ))
-            if not is_network or attempt >= _API_RETRY_MAX:
-                raise
-            wait = _API_RETRY_BACKOFF[min(attempt, len(_API_RETRY_BACKOFF) - 1)]
-            print(f"    ⚠ {label} 网络异常 ({type(e).__name__}), {wait}s 后重试 ({attempt+1}/{_API_RETRY_MAX})")
-            time.sleep(wait)
-    raise last_err  # 兜底, 实际走不到
-
-# Anthropic server-side tools（原生 backend 用）
-_ANTHROPIC_SERVER_TOOLS = [
-    {"type": "web_search_20260209", "name": "web_search"},
-    {"type": "web_fetch_20260209",  "name": "web_fetch"},
-]
-
-# OpenAI-compatible web_search tool（aihubmix 支持）
-_OPENAI_SERVER_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": "搜索互联网获取最新信息",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "搜索关键词"}
-                },
-                "required": ["query"],
-            },
-        },
-    }
-]
-
-
-def _run_web_agent_anthropic(system: str, user: str, max_tokens: int = 8192) -> str:
-    import time
-    try:
-        import anthropic as _anthropic
-    except ImportError:
-        raise RuntimeError(
-            "未安装 anthropic SDK。请运行:\n"
-            "  pip install anthropic\n"
-            "或设置 AIHUBMIX_API_KEY 或 DEEPSEEK_API_KEY 使用其他后端。"
-        ) from None
-    client = _anthropic.Anthropic()
-    messages: list[dict] = [{"role": "user", "content": user}]
-    round_n = 0
-    tool_call_count = 0  # 累计工具调用次数 (替代轮数, 单轮可能并发多个 tool_call)
-
-    while round_n < _MAX_AGENT_ROUNDS:
-        round_n += 1
-        # 触底: 累计 tool call 数 ≥ 上限 且已过 round 1 (允许首轮并发搜索结果被处理), 或撞 round 兜底 → 强制 finalize
-        budget_used = (tool_call_count >= _MAX_TOOL_CALLS and round_n >= 2) or round_n == _MAX_AGENT_ROUNDS
-        if budget_used:
-            messages.append({
-                "role": "user",
-                "content": (
-                    f"⚠ 已用满 {tool_call_count}/{_MAX_TOOL_CALLS} 次工具调用预算. "
-                    "立即停止搜索, 综合已收集的全部信息, 直接输出最终 JSON 数组. "
-                    "不要再调用任何工具."
-                ),
-            })
-
-        print(f"    → 等待 LLM 响应 (round {round_n}, 已用 {tool_call_count}/{_MAX_TOOL_CALLS} 次工具)…")
-        t0 = time.monotonic()
-        resp = _api_call_with_retry(
-            lambda: client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=max_tokens,
-                system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-                tools=_ANTHROPIC_SERVER_TOOLS,
-                messages=messages,
-                **({"tool_choice": {"type": "none"}} if budget_used else {}),
-            ),
-            label="Anthropic",
-        )
-        elapsed = time.monotonic() - t0
-        messages.append({"role": "assistant", "content": resp.content})
-
-        # 打印本轮工具调用
-        tool_uses = [b for b in resp.content if getattr(b, "type", "") == "tool_use"]
-        if tool_uses:
-            tool_call_count += len(tool_uses)
-            for tu in tool_uses:
-                tool_name = getattr(tu, "name", "?")
-                tool_input = getattr(tu, "input", {}) or {}
-                hint = tool_input.get("query") or tool_input.get("url") or ""
-                hint = (hint[:80] + "…") if len(hint) > 80 else hint
-                print(f"    ⏱ [round {round_n}, tools {tool_call_count}/{_MAX_TOOL_CALLS}] {tool_name}: {hint}  ({elapsed:.1f}s)")
-        else:
-            print(f"    ⏱ [round {round_n}] (直接返回, tools {tool_call_count}/{_MAX_TOOL_CALLS})  ({elapsed:.1f}s)")
-
-        if resp.stop_reason in ("end_turn", "pause_turn"):
-            texts = [b.text for b in resp.content if getattr(b, "type", "") == "text"]
-            return "\n".join(texts)
-
-        texts = [b.text for b in resp.content if getattr(b, "type", "") == "text"]
-        if texts:
-            return "\n".join(texts)
-        raise RuntimeError(f"意外的 stop_reason: {resp.stop_reason}")
-
-    # 撞 _MAX_AGENT_ROUNDS 兜底: 抓最后一条 assistant 文本块
-    last_texts = [b.text for b in resp.content if getattr(b, "type", "") == "text"]
-    return "\n".join(last_texts)
-
-
-def _run_web_agent_openai(system: str, user: str, max_tokens: int = 8192) -> str:
-    import httpx as _httpx
-    import time
-
-    messages: list[dict] = [
-        {"role": "system", "content": system},
-        {"role": "user",   "content": user},
-    ]
-    round_n = 0
-
-    tool_call_count = 0
-    while round_n < _MAX_AGENT_ROUNDS:
-        round_n += 1
-        budget_used = (tool_call_count >= _MAX_TOOL_CALLS and round_n >= 2) or round_n == _MAX_AGENT_ROUNDS
-        if budget_used:
-            messages.append({
-                "role": "user",
-                "content": (
-                    f"⚠ 已用满 {tool_call_count}/{_MAX_TOOL_CALLS} 次工具调用预算. "
-                    "立即停止搜索, 综合已收集的全部信息, 直接输出最终 JSON 数组. "
-                    "不要再调用任何工具."
-                ),
-            })
-
-        print(f"    → 等待 LLM 响应 (round {round_n}, 已用 {tool_call_count}/{_MAX_TOOL_CALLS} 次工具)…")
-        t0 = time.monotonic()
-
-        body = {
-            "model": _AIHUBMIX_MODEL,
-            "max_completion_tokens": max_tokens,
-            "messages": messages,
-            "tools": _OPENAI_SERVER_TOOLS,
-            "tool_choice": "none" if budget_used else "auto",
-        }
-
-        def _call():
-            with _httpx.Client(timeout=120) as h:
-                r = h.post(
-                    f"{_AIHUBMIX_BASE}/chat/completions",
-                    headers={"Authorization": f"Bearer {_AIHUBMIX_KEY}"},
-                    json=body,
-                )
-                if r.status_code != 200:
-                    raise RuntimeError(f"AIHUBMIX 返回 {r.status_code}: {r.text[:500]}")
-                return r.json()
-
-        data = _api_call_with_retry(_call, label="AIHUBMIX")
-        elapsed = time.monotonic() - t0
-
-        choice  = data["choices"][0]
-        message = choice["message"]
-        messages.append(message)
-
-        tcs = message.get("tool_calls") or []
-        if tcs:
-            tool_call_count += len(tcs)
-            for tc in tcs:
-                fn = tc.get("function", {})
-                fn_name = fn.get("name", "?")
-                args_raw = fn.get("arguments", "")
-                hint = ""
-                try:
-                    args = json.loads(args_raw) if args_raw else {}
-                    hint = args.get("query") or args.get("url") or ""
-                except Exception:
-                    hint = args_raw[:60]
-                hint = (hint[:80] + "…") if len(hint) > 80 else hint
-                print(f"    ⏱ [round {round_n}, tools {tool_call_count}/{_MAX_TOOL_CALLS}] {fn_name}: {hint}  ({elapsed:.1f}s)")
-        else:
-            print(f"    ⏱ [round {round_n}] (直接返回, tools {tool_call_count}/{_MAX_TOOL_CALLS})  ({elapsed:.1f}s)")
-
-        if choice.get("finish_reason") == "stop" or not tcs:
-            return message.get("content") or ""
-
-        tool_results = []
-        for tc in tcs:
-            tool_results.append({
-                "role":         "tool",
-                "tool_call_id": tc["id"],
-                "content":      f"[web_search 已由服务端执行，结果已包含在上下文中]",
-            })
-        messages.extend(tool_results)
-
-    return message.get("content") or ""
-
-
-# DeepSeek 客户端工具定义 (OpenAI-compatible function calling, 由本脚本自行执行)
-_DEEPSEEK_CLIENT_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": "搜索互联网获取最新信息。返回相关结果的标题、URL 和摘要。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "搜索关键词"}
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "web_fetch",
-            "description": "抓取指定 URL 的网页内容并提取纯文本。用于获取拆机报告、产品规格页面等详细内容。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "要抓取的网页 URL"}
-                },
-                "required": ["url"],
-            },
-        },
-    },
-]
-
-
-def _client_web_search(query: str, max_results: int = 8) -> str:
-    """客户端执行 DuckDuckGo 搜索，返回格式化文本结果。"""
-    import httpx as _httpx
-
-    try:
-        with _httpx.Client(timeout=15) as h:
-            r = h.get(
-                "https://html.duckduckgo.com/html/",
-                params={"q": query},
-                headers={"User-Agent": "Mozilla/5.0 (compatible; BOMAnalyzer/1.0)"},
-            )
-            if r.status_code != 200:
-                return f"搜索失败: HTTP {r.status_code}"
-            html = r.text
-    except Exception as e:
-        return f"搜索失败: {type(e).__name__}: {e}"
-
-    # 解析 DuckDuckGo HTML 结果
-    results: list[str] = []
-    links = re.findall(
-        r'<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>', html
-    )
-    snippets = re.findall(
-        r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>', html
-    )
-
-    for i, (url, title) in enumerate(links[:max_results]):
-        title_clean = re.sub(r"<[^>]+>", "", title).strip()
-        snippet_clean = ""
-        if i < len(snippets):
-            snippet_clean = re.sub(r"<[^>]+>", "", snippets[i]).strip()
-        results.append(f"{i + 1}. {title_clean}\n   URL: {url}\n   {snippet_clean}")
-
-    if not results:
-        return f"搜索 '{query}' 无结果。"
-    return "\n\n".join(results)
-
-
-def _client_web_fetch(url: str, max_chars: int = 6000) -> str:
-    """客户端抓取 URL 并提取文本内容。"""
-    import httpx as _httpx
-
-    try:
-        with _httpx.Client(timeout=20, follow_redirects=True) as h:
-            r = h.get(
-                url,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/120.0.0.0 Safari/537.36"
-                    ),
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-                },
-            )
-            if r.status_code != 200:
-                return f"抓取失败: HTTP {r.status_code}"
-            html = r.text
-    except Exception as e:
-        return f"抓取失败: {type(e).__name__}: {e}"
-
-    # 提取文本: 移除 script/style/nav/footer/header, 然后去 HTML 标签
-    html = re.sub(
-        r"<(script|style|nav|footer|header|noscript)[^>]*>.*?</\1>",
-        "", html, flags=re.DOTALL | re.IGNORECASE,
-    )
-    text = re.sub(r"<[^>]+>", " ", html)
-    text = re.sub(r"&[a-z]+;", " ", text)  # &nbsp; &amp; 等
-    text = re.sub(r"\s+", " ", text).strip()
-
-    if len(text) > max_chars:
-        text = text[:max_chars] + f"\n\n…[截断, 原文共 {len(text)} 字符]"
-    return f"[web_fetch: {url}]\n\n{text}"
-
-
-def _run_web_agent_deepseek(system: str, user: str, max_tokens: int = 8192) -> str:
-    """DeepSeek API — 多轮 agent loop，客户端自行执行 web_search / web_fetch。
-
-    模型发起 tool_calls → 本脚本执行 web_search( DuckDuckGo )/web_fetch( httpx ) →
-    结果注入 messages → 继续推理 → 直到模型输出最终文本或触预算上限。
-    """
-    import httpx as _httpx
-    import time
-
-    messages: list[dict] = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ]
-
-    round_n = 0
-    tool_call_count = 0
-
-    # ── 多轮搜索主循环 ──────────────────────────────────────
-    try:
-        while round_n < _MAX_AGENT_ROUNDS:
-            round_n += 1
-            budget_used = (
-                (tool_call_count >= _MAX_TOOL_CALLS and round_n >= 2)
-                or round_n == _MAX_AGENT_ROUNDS
-            )
-            if budget_used:
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        f"⚠ 已用满 {tool_call_count}/{_MAX_TOOL_CALLS} 次工具调用预算. "
-                        "立即停止搜索, 综合已收集的全部信息, 直接输出最终 JSON 数组. "
-                        "不要再调用任何工具."
-                    ),
-                })
-
-            t0 = time.monotonic()
-            if tool_call_count == 0:
-                print(f"    → DeepSeek ({_DEEPSEEK_MODEL}) 多轮调研 (客户端 web_search)…")
-
-            body: dict = {
-                "model": _DEEPSEEK_MODEL,
-                "max_tokens": max_tokens,
-                "messages": messages,
-                "tools": _DEEPSEEK_CLIENT_TOOLS,
-                "tool_choice": "none" if budget_used else "auto",
-            }
-
-            def _call():
-                with _httpx.Client(timeout=180) as h:
-                    r = h.post(
-                        f"{_DEEPSEEK_BASE}/chat/completions",
-                        headers={"Authorization": f"Bearer {_DEEPSEEK_KEY}"},
-                        json=body,
-                    )
-                    if r.status_code != 200:
-                        raise RuntimeError(f"DeepSeek 返回 {r.status_code}: {r.text[:500]}")
-                    return r.json()
-
-            data = _api_call_with_retry(_call, label="DeepSeek")
-            elapsed = time.monotonic() - t0
-
-            choice = data["choices"][0]
-            message = choice["message"]
-            messages.append(message)
-
-            tcs = message.get("tool_calls") or []
-            if tcs:
-                tool_call_count += len(tcs)
-                tool_results: list[dict] = []
-                for tc in tcs:
-                    fn = tc.get("function", {})
-                    fn_name = fn.get("name", "?")
-                    fn_args_str = fn.get("arguments", "{}")
-                    try:
-                        fn_args = json.loads(fn_args_str) if fn_args_str else {}
-                    except Exception:
-                        fn_args = {}
-
-                    if fn_name == "web_search":
-                        query = fn_args.get("query", "")
-                        hint = (query[:80] + "…") if len(query) > 80 else query
-                        print(
-                            f"    ⏱ [round {round_n}, tools {tool_call_count}/{_MAX_TOOL_CALLS}] "
-                            f"web_search: {hint}  ({elapsed:.1f}s)"
-                        )
-                        result = _client_web_search(query)
-                    elif fn_name == "web_fetch":
-                        url = fn_args.get("url", "")
-                        hint = (url[:80] + "…") if len(url) > 80 else url
-                        print(
-                            f"    ⏱ [round {round_n}, tools {tool_call_count}/{_MAX_TOOL_CALLS}] "
-                            f"web_fetch: {hint}  ({elapsed:.1f}s)"
-                        )
-                        result = _client_web_fetch(url)
-                    else:
-                        result = f"未知工具: {fn_name}"
-
-                    tool_results.append({
-                        "role": "tool",
-                        "tool_call_id": tc["id"],
-                        "content": result,
-                    })
-                messages.extend(tool_results)
-            else:
-                content = message.get("content") or ""
-                if tool_call_count > 0:
-                    print(
-                        f"    ⏱ [round {round_n}] 调研完成 (共 {tool_call_count} 次搜索, "
-                        f"{len(content)} chars, {elapsed:.1f}s)"
-                    )
-                else:
-                    print(
-                        f"    ⏱ DeepSeek 直接返回 (无搜索需求, {len(content)} chars, "
-                        f"{elapsed:.1f}s)"
-                    )
-                return content
-
-            if choice.get("finish_reason") == "stop":
-                return message.get("content") or ""
-
-        # 撞 _MAX_AGENT_ROUNDS 兜底
-        return message.get("content") or ""
-
-    except Exception as _ds_err:
-        # ── 搜索阶段 API 故障降级 ───────────────────────────────
-        # 如果已积累搜索数据，回退到单轮推理（不带 tools，把抓取结果拼进 prompt）
-        if tool_call_count > 0:
-            print(
-                f"    ⚠ DeepSeek API 异常 ({type(_ds_err).__name__}), "
-                f"已收集 {tool_call_count} 次搜索结果, 降级为单轮推理…"
-            )
-            try:
-                fallback_body = {
-                    "model": _DEEPSEEK_MODEL,
-                    "max_tokens": max_tokens,
-                    "messages": messages,
-                }
-                with _httpx.Client(timeout=180) as h:
-                    fr = h.post(
-                        f"{_DEEPSEEK_BASE}/chat/completions",
-                        headers={"Authorization": f"Bearer {_DEEPSEEK_KEY}"},
-                        json=fallback_body,
-                    )
-                    if fr.status_code == 200:
-                        fb_data = fr.json()
-                        fb_content = fb_data["choices"][0]["message"].get("content", "")
-                        print(f"    ⏱ 降级推理完成 ({len(fb_content)} chars)")
-                        return fb_content
-            except Exception:
-                pass
-            # 降级也失败 → 抛异常，让上层 stage1_discovery 处理
-        raise
-
-
-def _run_web_agent(system: str, user: str, max_tokens: int = 8192) -> str:
-    if _AIHUBMIX_KEY:
-        return _run_web_agent_openai(system, user, max_tokens)
-    if _DEEPSEEK_KEY:
-        return _run_web_agent_deepseek(system, user, max_tokens)
-    if _os.environ.get("ANTHROPIC_API_KEY"):
-        return _run_web_agent_anthropic(system, user, max_tokens)
-    raise RuntimeError(
-        "未配置 LLM API Key，无法进行 web 调研。请设置以下任一环境变量:\n"
-        "  export ANTHROPIC_API_KEY=sk-ant-...\n"
-        "  export AIHUBMIX_API_KEY=sk-...\n"
-        "  export DEEPSEEK_API_KEY=sk-...\n"
-        "或使用 --csv 指定已有拆机 CSV 跳过 Stage 1 调研。"
-    )
 
 
 def _extract_json_array(text: str) -> list[dict]:
@@ -783,8 +347,8 @@ _DISCOVERY_SYSTEM = (
     "你擅长通过交叉验证法（Triangulation）从非结构化情报中还原底层 BOM 架构。"
 
     "【情报源优先级】：\n"
-    "1. 准入合规维度：FCCID.io（内部照片/框图）、Bluetooth SIG（SoC/通讯模组主轴）；\n"
-    "2. 深度逆向维度：FCC、知乎等元器件级拆解报告；\n"
+    "1. 准入合规维度：FCCID.io / fcc.report（Internal Photos / Block Diagram / Test Report / User Manual）、Bluetooth SIG（SoC/通讯模组主轴）；\n"
+    "2. 深度逆向维度：FCC 内部照片、MyFixGuide、知乎等元器件级拆解报告；\n"
     "3. 供应链情报维度：知乎『Robot森』等垂直大V的 CMF 与结构件分析、芯片原厂"
     "（Rockchip/Allwinner/TI/ST/InvenSense）参考设计方案；\n"
     "4. 市场实测维度：VacuumWars、RTINGS 等性能规格对标数据。\n"
@@ -797,9 +361,11 @@ _DISCOVERY_SYSTEM = (
     "注意：组装人工/SLAM版税/包装材料/物流运保等属于其他一级大类，不归入7桶。\n"
 
     "【集成指令】：\n"
-    "1. 针对缺失物料，需基于主控方案进行启发式补全（Heuristic Enrichment），并标记 confidence='inferred'；\n"
-    "2. 严格遵守『7 桶成本框架』进行分类，确保各桶占比符合硬件物料基准分布；\n"
-    "3. 每桶按三级功能模块组织，模块名参考 framework typical_items 的 section 字段。\n"
+    "1. 先用可点击来源确认零件；有 source_url 的行不要写 confidence='inferred'。\n"
+    "   FCC / fcc.report 来源标记 confidence='fcc'，公开拆机报告标记 'teardown'，普通规格/评测来源标记 'web'；\n"
+    "2. 只有缺少直接证据、但根据主控方案或典型架构补齐的物料，才标记 confidence='inferred'；\n"
+    "3. 严格遵守『7 桶成本框架』进行分类，确保各桶占比符合硬件物料基准分布；\n"
+    "4. 每桶按三级功能模块组织，模块名参考 framework typical_items 的 section 字段。\n"
 
     "【输出规范】：严格按指定 JSON 格式输出，禁止任何解释性文字或 Markdown 标记。"
 )
@@ -819,18 +385,25 @@ _DISCOVERY_PROMPT = """\
    - 对每个 URL: web_fetch 抓取 → 提取拆机内容
    - 这一步通常足以覆盖 80%+ 信息, 完成后只需做必要补充搜索
 
-1. **补充搜索: 拆机报告** (上述链接信息不足时)
+1. **补充搜索: FCC / 合规资料** (上述链接信息不足时)
+   - web_search: "{model} site:fccid.io Internal photos PCB"
+   - web_search: "{model} site:fcc.report FCC-ID Internal Photos"
+   - web_search: "{model} FCC ID block diagram test report"
+   - 找到 FCC 页面后必须 web_fetch 具体 Internal Photos / Test Report / User Manual 页面
+
+2. **补充搜索: 拆机报告** (FCC 信息不足时)
    - web_search: "{model} site:myfixguide.com"
    - web_search: "{model} 拆机报告 PCB 芯片 知乎"
    - web_search: "{model} teardown internals disassembly"
+   - web_search: "{model} 拆解 主板 芯片 丝印 维修"
 
-2. **补充搜索: 蓝牙SIG认证**（可确认芯片型号）
+3. **补充搜索: 蓝牙SIG认证**（可确认芯片型号）
    - web_search: "{model} bluetooth qualified chip"
 
-3. **补充搜索: 规格/评测**（已知规格不要重复查）
+4. **补充搜索: 规格/评测**（已知规格不要重复查）
    - web_search: "{model} SoC CPU 雷达型号"
 
-4. **综合以上来源**，按4级拆机结构输出下方 JSON。每行 section 字段填三级功能模块名（参考桶说明中【】标注的模块），name 字段填四级组件名。
+5. **综合以上来源**，按4级拆机结构输出下方 JSON。每行 section 字段填三级功能模块名（参考桶说明中【】标注的模块），name 字段填四级组件名。
 
 ---
 
@@ -851,18 +424,20 @@ _DISCOVERY_PROMPT = """\
     "spec": "八核A76+A55，6T NPU",
     "manufacturer": "瑞芯微",
     "qty": 1,
-    "source_url": "https://..."
+    "source_url": "https://...",
+    "confidence": "fcc/teardown/web/inferred"
   }}
 ]
 
 section 说明：填写该零件所属的三级功能模块名（如"核心算力"/"恒压活水洗地"/"外壳系统"），参考桶说明中【】标注的模块名。
 source_url 说明：填写该零件名称/型号信息的具体来源页面 URL；若为行业推断则留空。
+confidence 说明：`fcc`=FCC/internal photo/OCR；`teardown`=公开拆机报告；`web`=规格/评测/认证页面；`inferred`=无直接来源的启发式补齐。凡 source_url 非空，禁止写 `inferred`。
 
 ---
 
 **硬约束（必须满足，否则视为失败）**：
 
-1. **每桶 ≥ 3 件**（能源桶除外，≥ 1 件即可）。拆机报告未提及的也要按 typical_items 推断补齐，标注 `confidence: inferred`。
+1. **每桶 ≥ 3 件**（能源桶除外，≥ 1 件即可）。拆机报告未提及的才按 typical_items 推断补齐，标注 `confidence: inferred`；已经有 FCC/拆机/网页来源的行必须使用 `fcc` / `teardown` / `web`。
 
 2. **基站系统** `dock_station` 按三级功能拆为三大模块（若带基站）：
    - **外壳系统**: 基站外壳组件（上盖+中框+底座+后壳+隔板）
@@ -955,8 +530,43 @@ def _render_product_context(model: str) -> str:
     return "\n".join(lines)
 
 
+def _normalize_source_confidence(rows: list[dict]) -> list[dict]:
+    """根据 source_url 修正置信度，避免有证据的行仍被写成 inferred。"""
+    trusted = {"confirmed", "teardown", "fcc", "web", "framework_fill", "estimate"}
+    upgraded = 0
+    for r in rows:
+        conf = (r.get("confidence") or "").strip().lower()
+        src = (r.get("source_url") or "").strip().lower()
+        if conf in {"framework_fill", "estimate"}:
+            continue
+        if src and (not conf or conf == "inferred" or conf not in trusted):
+            if "fccid.io" in src or "fcc.report" in src or "fcc-id" in src:
+                r["confidence"] = "fcc"
+            elif any(k in src for k in ("myfixguide", "ifixit", "zhihu")):
+                r["confidence"] = "teardown"
+            else:
+                r["confidence"] = "web"
+            upgraded += 1
+        elif not conf:
+            r["confidence"] = "inferred"
+    if upgraded:
+        print(f"  [Confidence] 基于 source_url 修正 {upgraded} 条 inferred/空置信度记录")
+    return rows
+
+
+def _is_low_confidence_cache(rows: list[dict]) -> bool:
+    """判断已有 CSV 是否只是旧的纯推断缓存，避免跳过 Stage 1 调研。"""
+    if not rows:
+        return False
+    trusted = {"confirmed", "teardown", "fcc", "web"}
+    trusted_count = sum((r.get("confidence") or "").strip().lower() in trusted for r in rows)
+    sourced_count = sum(bool((r.get("source_url") or "").strip()) for r in rows)
+    return trusted_count == 0 and sourced_count == 0
+
+
 def stage1_discovery(model: str, msrp: float,
-                     fcc_rows: list[dict] | None = None) -> list[dict]:
+                     fcc_rows: list[dict] | None = None,
+                     fcc_links: dict | None = None) -> list[dict]:
     import time
     src = "FCC + 多源调研" if fcc_rows else "多源调研"
     print(f"  [Stage 1] {src} {model}…")
@@ -972,7 +582,13 @@ def stage1_discovery(model: str, msrp: float,
 
     # FCC 缺失时提示
     if not fcc_rows:
-        print(f"  ⚠ 未找到 FCC 数据, 跑 'python scripts/fetch_fcc.py find {model!r}' 可补充上游信息")
+        if fcc_links:
+            print(
+                f"  ⚠ 仅找到 FCC links.json，尚无 OCR CSV；建议先跑 "
+                f"'python scripts/fetch_fcc.py ocr {model!r}'，或让 Stage 1 抓 FCC 页面补充证据"
+            )
+        else:
+            print(f"  ⚠ 未找到 FCC 数据, 跑 'python scripts/fetch_fcc.py find {model!r}' 可补充上游信息")
 
     fcc_hint = ""
     if fcc_rows:
@@ -983,15 +599,16 @@ def stage1_discovery(model: str, msrp: float,
             + "\n".join(lines)
             + "\n"
         )
+    fcc_links_hint = "" if fcc_rows else _render_fcc_links_prompt(fcc_links or {})
     prompt = product_ctx + _DISCOVERY_PROMPT.format(
         model=model,
         msrp=int(msrp),
         bucket_section=render_prompt_bucket_section(),
-    ) + fcc_hint
+    ) + fcc_hint + fcc_links_hint
 
     t0 = time.monotonic()
     try:
-        text = _run_web_agent(_DISCOVERY_SYSTEM, prompt, max_tokens=8192)
+        text = run_web_agent(_DISCOVERY_SYSTEM, prompt, max_tokens=8192)
     except Exception as e:
         # API 网络错误 (代理断连等) 给出明确出口提示, 不再爆栈
         elapsed = time.monotonic() - t0
@@ -1002,7 +619,7 @@ def stage1_discovery(model: str, msrp: float,
         ))
         if is_network:
             raise RuntimeError(
-                f"Stage 1 LLM 网络异常 (已重试 {_API_RETRY_MAX} 次仍失败, 总耗时 {elapsed:.0f}s):\n"
+                f"Stage 1 LLM 网络异常 (多次重试仍失败, 总耗时 {elapsed:.0f}s):\n"
                 f"  {type(e).__name__}: {e}\n\n"
                 f"原因可能是:\n"
                 f"  • HTTPS_PROXY 代理在长 LLM 响应上 TCP 断开 (常见)\n"
@@ -1042,6 +659,8 @@ def stage1_discovery(model: str, msrp: float,
             r.setdefault(key, "")
         r["qty"]        = _norm_qty(r.get("qty"))
         r["updated_at"] = today
+
+    rows = _normalize_source_confidence(rows)
 
     print(f"  ✓ Stage 1 完成：{len(rows)} 条零件记录")
     return rows
@@ -1096,6 +715,7 @@ def stage2_heuristic_enrichment(rows: list[dict]) -> list[dict]:
                 "manufacturer": "瑞芯微" if pmic.startswith("RK") else "",
                 "qty": 1, "source_url": "", "updated_at": today,
                 "product_source": src,
+                "confidence": "inferred",
             })
             existing_models.add(("compute_electronics", pmic.upper()))
             existing_names.add("pmic")
@@ -1110,6 +730,7 @@ def stage2_heuristic_enrichment(rows: list[dict]) -> list[dict]:
                 "spec": ram, "manufacturer": "三星/海力士/美光",
                 "qty": 1, "source_url": "", "updated_at": today,
                 "product_source": src,
+                "confidence": "inferred",
             })
             existing_names.add("ram")
             added += 1
@@ -1123,6 +744,7 @@ def stage2_heuristic_enrichment(rows: list[dict]) -> list[dict]:
                 "spec": rom, "manufacturer": "三星/Kingston",
                 "qty": 1, "source_url": "", "updated_at": today,
                 "product_source": src,
+                "confidence": "inferred",
             })
             existing_names.add("rom")
             added += 1
@@ -1952,7 +1574,7 @@ def lookup_msrp_from_web(model: str) -> float:
     """多渠道搜索产品实际零售价 (国内电商 → 亚马逊海外), 查到后写入 products_db.json。"""
     print(f"  → 查询 {model} 零售价…")
     try:
-        text = _run_web_agent(
+        text = run_web_agent(
             (
                 "你是价格查询助手。依次在以下渠道搜索该产品的当前零售价:\n"
                 "  1. 京东 (jd.com) — 国产品牌首选\n"
@@ -2046,7 +1668,8 @@ def _save_msrp_to_db(model: str, price_cny: float, source_url: str) -> None:
 
 def run_pipeline(model: str, msrp: float,
                  existing_csv: Optional[Path] = None,
-                 msrp_source: str = "") -> tuple[list[dict], dict]:
+                 msrp_source: str = "",
+                 force_web: bool = False) -> tuple[list[dict], dict]:
     """完整执行 Stage 0 + 4-Stage Pipeline，返回 (rows, audit_report)。
 
     model:           用户原始输入 (如 '云鲸逍遥003'), 用作 LLM prompt 的 model 字段
@@ -2060,19 +1683,35 @@ def run_pipeline(model: str, msrp: float,
 
     # Stage 0: 加载 FCC 上游（fetch_fcc.py find+ocr 产出，有则用，无则静默跳过）
     fcc_rows = load_fcc_rows(slug)
+    fcc_links = {} if fcc_rows else load_fcc_links(slug)
+    fcc_status = "ocr_csv_found" if fcc_rows else ("links_only" if fcc_links else "missing")
+    print(f"  → FCC 状态: {fcc_status}")
 
     # Stage 1: Discovery (LLM 用 model 原名, 不用 canonical_key)
     # 查已有数据: 优先匹配已有拆机 CSV（不限日期），有则跳过 web 调研
-    if existing_csv and existing_csv.exists():
+    if force_web:
+        print("  → --force-web / --no-cache 已启用，跳过旧 CSV 复用，重新执行 Stage 1 web 调研")
+        rows = []
+    elif existing_csv and existing_csv.exists():
         rows = load_csv(existing_csv)
         print(f"  ✓ 加载指定 CSV: {existing_csv.name}（{len(rows)} 条，跳过 Stage 1 web 调研）")
     else:
         auto_csv = find_csv(canonical_key) or find_csv(model)
         if auto_csv:
-            rows = load_csv(auto_csv)
-            print(f"  ✓ 自动加载已有 CSV: {auto_csv.name}（{len(rows)} 条，跳过 Stage 1 web 调研）")
+            cached_rows = _normalize_source_confidence(load_csv(auto_csv))
+            if _is_low_confidence_cache(cached_rows):
+                print(
+                    f"  ⚠ 已有 CSV {auto_csv.name} 全部缺少可信来源，视为低可信缓存，重新执行 Stage 1 web 调研"
+                )
+                rows = []
+            else:
+                rows = cached_rows
+                print(f"  ✓ 自动加载已有 CSV: {auto_csv.name}（{len(rows)} 条，跳过 Stage 1 web 调研）")
         else:
-            rows = stage1_discovery(model, msrp, fcc_rows=fcc_rows)
+            rows = []
+
+        if not rows:
+            rows = stage1_discovery(model, msrp, fcc_rows=fcc_rows, fcc_links=fcc_links)
             if not rows:
                 # Stage 1 空 → 降级：尝试加载最近一次同机型的 CSV
                 existing = sorted(TEARDOWN_DIR.glob(f"{slug}_*_teardown.csv"))
@@ -2089,8 +1728,11 @@ def run_pipeline(model: str, msrp: float,
     if fcc_rows:
         rows = _merge_fcc_first(fcc_rows, rows)
 
+    rows = _normalize_source_confidence(rows)
+
     # Stage 2: SoC Heuristic Enrichment (推导 PMIC/RAM/ROM 伴随件)
     rows = stage2_heuristic_enrichment(rows)
+    rows = _normalize_source_confidence(rows)
 
     # 桶名归一化 (兜底: LLM 偶尔自创命名)
     rows = normalize_buckets(rows)
@@ -2122,6 +1764,7 @@ def run_pipeline(model: str, msrp: float,
         "total_parts": len(rows),
         "coverage": coverage,
         "money": money,
+        "fcc_status": fcc_status,
         "alerts": coverage["alerts"] + money["bias_alerts"],
     }
 
@@ -2131,6 +1774,9 @@ def main() -> None:
     parser.add_argument("model", nargs="?", help="机型名称，如 '石头G30S Pro'")
     parser.add_argument("--msrp",    type=float, help="建议零售价（元），不传则自动查询")
     parser.add_argument("--csv",     type=Path,  help="指定现有 CSV 路径（跳过 Stage 1）")
+    parser.add_argument("--force-web", "--no-cache", action="store_true",
+                        dest="force_web",
+                        help="忽略旧 CSV 缓存，强制重新执行 Stage 1 web 调研")
     parser.add_argument("--out",     type=Path,  help="输出 CSV 路径（默认 data/teardowns/{slug}_{YYYYMMDD}_teardown.csv）")
     args = parser.parse_args()
 
@@ -2187,12 +1833,15 @@ def main() -> None:
         rows, audit = run_pipeline(
             model=model,
             msrp=msrp,
-            existing_csv=args.csv,
+            existing_csv=None if args.force_web else args.csv,
             msrp_source=msrp_source,
+            force_web=args.force_web,
         )
     except RuntimeError as e:
         print(f"\n❌ {e}")
         sys.exit(1)
+
+    print(f"FCC 状态: {audit.get('fcc_status', '-')}")
 
     # 保存 CSV
     save_csv(rows, csv_out, model)

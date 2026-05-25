@@ -16,4 +16,5 @@ ALLOWED_TOOLS = [
     "generate_bom_estimate",
     "get_bom_cost",
     "web_search",
+    "web_fetch",
 ]
