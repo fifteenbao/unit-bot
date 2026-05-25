@@ -939,8 +939,8 @@ def _lookup_unit_price(
       5. standard_parts.json
       6. 桶兜底
 
-    already_used_lib_ids: 本桶内已被"整机唯一"件命中的 lib id,
-    同桶再出现时不再重复计价。
+    already_used_lib_ids: 仅用于聚合件防重。本桶内普通重复件（如左右轮电机、
+    多颗传感器、多组阀/泵）仍应按数量计价，不能因为命中同一 lib id 就降成兜底价。
     """
     bucket = (row.get("bom_bucket") or "").strip()
     name = (row.get("name") or "").strip()
@@ -1114,9 +1114,10 @@ def stage4_aggregate_audit(
                 continue
             counted_aggregates.add(agg_key)
 
+        dedupe_ids = used_by_bucket[bkt] if is_aggregate(note) else None
         unit_price, src = _lookup_unit_price(
             r, lib_index, parts_json,
-            already_used_lib_ids=used_by_bucket[bkt],
+            already_used_lib_ids=dedupe_ids,
         )
         # 聚合件固定按 qty=1 计 (整机整体)
         qty = 1 if is_aggregate(note) else _norm_qty(r.get("qty"))
@@ -1171,7 +1172,7 @@ def stage4_aggregate_audit(
                 }
                 unit_price, src = _lookup_unit_price(
                     virt_row, lib_index, parts_json,
-                    already_used_lib_ids=used_by_bucket[bkt],
+                    already_used_lib_ids=None,
                 )
                 line = round(unit_price * default_qty, 2)
                 bucket_totals[bkt] += line
@@ -1848,7 +1849,10 @@ def main() -> None:
     if rows:
         print(f"\n✓ 写出 → {csv_out}\n")
         # 打印汇总
-        print(f"总计 {len(rows)} 条零件记录 | BOM 合计 ¥{audit['money']['grand_total']:.2f}")
+        print(
+            f"总计 {len(rows)} 条零件记录 | BOM+辅料合计 ¥{audit['money']['grand_total_with_aux']:.2f} "
+            f"(7桶显性件 ¥{audit['money']['grand_total']:.2f})"
+        )
         if audit["alerts"]:
             print(f"⚠ {len(audit['alerts'])} 条告警 "
                   f"(覆盖 {len(audit['coverage']['alerts'])} / 占比偏差 {len(audit['money']['bias_alerts'])}), "

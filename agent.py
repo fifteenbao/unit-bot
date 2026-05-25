@@ -666,8 +666,8 @@ def tool_generate_teardown_csv(
 
     money = audit.get("money", {})
     buckets_money = money.get("buckets_money", {})
-    grand_total = money.get("grand_total", 0.0)
-    grand_total_with_aux = money.get("grand_total_with_aux", grand_total)
+    explicit_bom_total = money.get("grand_total", 0.0)
+    grand_total_with_aux = money.get("grand_total_with_aux", explicit_bom_total)
 
     return json.dumps({
         "status": "generated",
@@ -675,7 +675,8 @@ def tool_generate_teardown_csv(
         "rows": len(rows),
         "msrp": price,
         "fcc_status": audit.get("fcc_status"),
-        "total_bom_cny": grand_total,
+        "total_bom_cny": grand_total_with_aux,
+        "explicit_parts_bom_cny": explicit_bom_total,
         "total_bom_with_aux_cny": grand_total_with_aux,
         "bom_rate_pct": round(grand_total_with_aux / price * 100, 1) if price else None,
         "alerts": audit.get("alerts", []),
