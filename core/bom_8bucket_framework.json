@@ -75,14 +75,23 @@
       {
         "level": 2,
         "name": "二级·硬件物料分项",
-        "description": "硬件物料的6个子项（图3二级项目），全部属于7桶框架内。",
+        "description": "公开报告给出硬件物料6个子项（图3二级项目）；本框架使用内部7桶口径，其中清洁模块需拆分为 cleaning 与 power_motion。",
         "t80s_items": [
-          {"name": "清洁模块",    "bom_bucket": "cleaning",             "t80s_cny": 500,  "t80s_note": "¥500+"},
+          {"name": "清洁模块",    "bom_bucket": "cleaning,power_motion", "t80s_cny": 500,  "t80s_note": "¥500+；内部7桶拆为 cleaning ¥320 + power_motion ¥180"},
           {"name": "传感器及导航", "bom_bucket": "perception",           "t80s_cny": 400,  "t80s_note": "¥400+"},
           {"name": "全能基站",    "bom_bucket": "dock_station",         "t80s_cny": 275,  "t80s_note": "¥250-300"},
           {"name": "PCBA+主控芯片","bom_bucket": "compute_electronics",  "t80s_cny": 175,  "t80s_note": "¥150-200"},
           {"name": "电池组",      "bom_bucket": "energy",               "t80s_cny": 50,   "t80s_note": "约¥50"},
           {"name": "结构及壳料件", "bom_bucket": "structure_cmf",        "t80s_cny": 200,  "t80s_note": "约¥200"}
+        ],
+        "t80s_7bucket_mapping": [
+          {"bom_bucket": "compute_electronics", "t80s_cny": 175, "pct_of_7bucket_bom": 11, "source_item": "PCBA+主控芯片"},
+          {"bom_bucket": "perception",          "t80s_cny": 400, "pct_of_7bucket_bom": 25, "source_item": "传感器及导航"},
+          {"bom_bucket": "power_motion",        "t80s_cny": 180, "pct_of_7bucket_bom": 11, "source_item": "清洁模块拆分：吸尘电机、驱动轮/履带、越障升降等"},
+          {"bom_bucket": "cleaning",            "t80s_cny": 320, "pct_of_7bucket_bom": 20, "source_item": "清洁模块拆分：恒压活水、滚刷、拖布、水箱水泵、水路结构"},
+          {"bom_bucket": "dock_station",        "t80s_cny": 275, "pct_of_7bucket_bom": 17, "source_item": "全能基站"},
+          {"bom_bucket": "energy",              "t80s_cny": 50,  "pct_of_7bucket_bom": 3,  "source_item": "电池组"},
+          {"bom_bucket": "structure_cmf",       "t80s_cny": 200, "pct_of_7bucket_bom": 13, "source_item": "结构及壳料件"}
         ]
       },
       {
@@ -316,29 +325,35 @@
       }
     },
     "level2_buckets": {
+      "calibration_note": "公开报告是6项硬件物料口径；内部7桶将“清洁模块 ¥500+”拆为 cleaning ¥320 与 power_motion ¥180，7桶显性硬件合计约 ¥1,600，另有约 ¥100 人工/水电/折旧使硬件物料口径接近 ¥1,700。",
       "cleaning": {
-        "cost_cny": "500+",
-        "pct": "~29%",
-        "note": "恒压活水洗地+高密度滚刷+活水循环+水箱水泵,成本远高于行业均值,是T80核心卖点"
+        "cost_cny": "约 320",
+        "pct": "~20%",
+        "note": "由公开“清洁模块 ¥500+”拆分而来；覆盖恒压活水洗地+高密度滚刷+活水循环+水箱水泵+拖布/水路结构,吸尘风机与行走驱动另归 power_motion"
       },
       "perception": {
         "cost_cny": "400+",
-        "pct": "~23%",
+        "pct": "~25%",
         "note": "LDS自产+3D结构光+视觉+IMU+接近传感器+AI加速器,传感器配置拉满"
+      },
+      "power_motion": {
+        "cost_cny": "约 180",
+        "pct": "~11%",
+        "note": "由公开“清洁模块 ¥500+”拆分而来；覆盖主机吸尘风机、驱动轮/履带、越障升降等动力与移动执行件"
       },
       "dock_station": {
         "cost_cny": "250-300",
-        "pct": "~16%",
+        "pct": "~17%",
         "note": "全能基站但成本控制好,说明基站不一定都是成本黑洞"
       },
       "compute_electronics": {
         "cost_cny": "150-200",
-        "pct": "~10%",
+        "pct": "~11%",
         "note": "PCBA+主控芯片+外围电子,占比与框架基准吻合"
       },
       "structure_cmf": {
         "cost_cny": "约 200",
-        "pct": "~12%",
+        "pct": "~13%",
         "note": "结构壳料+模具摊销+CMF,占比与框架基准吻合"
       },
       "energy": {
@@ -348,12 +363,12 @@
       }
     },
     "level3_modules": {
-      "清洁模块 (cleaning)": [
+      "清洁模块拆分·cleaning": [
         {
           "module": "恒压活水洗地系统",
           "components": [
             "动态压力调节系统",
-            "驱动电机"
+            "拖布驱动电机"
           ]
         },
         {
@@ -372,9 +387,6 @@
           ]
         },
         {
-          "module": "吸尘电机"
-        },
-        {
           "module": "水箱水泵及精密机械结构",
           "components": [
             "电控阀",
@@ -382,6 +394,14 @@
             "污水刮条",
             "污水箱"
           ]
+        }
+      ],
+      "清洁模块拆分·power_motion": [
+        {
+          "module": "吸尘电机"
+        },
+        {
+          "module": "行走驱动/越障升降"
         }
       ],
       "传感器及导航 (perception)": [
@@ -416,11 +436,11 @@
       "order": 1,
       "definition": "主控 SoC/MCU、无线通讯、存储、电源管理、板上阻容/IC、主板 PCB。包含整机全部有源/无源电子元器件。",
       "industry_pct_range": [
-        10,
-        20
+        8,
+        15
       ],
-      "industry_pct_avg": 13,
-      "industry_pct_note": "主控/PCBA/芯片占BOM 15-20%（含Wi-Fi/MCU/PMIC等）；T80S实测约10%（自产LiDAR含NPU归perception，此桶偏低）",
+      "industry_pct_avg": 11,
+      "industry_pct_note": "按T80S公开拆解校准：PCBA+主控芯片约¥150-200，内部7桶口径约11%；若AI加速器/LiDAR控制板归perception，本桶会低于传统15-20%口径",
       "user_value_weight": {
         "note": "用户感知为中等——算力本身不可见，但支撑路径规划/语音交互/OTA等感知差异",
         "entry": 0.5,
@@ -520,11 +540,11 @@
       "order": 2,
       "definition": "激光雷达、ToF、前视线激光/RGB、超声波、IMU、碰撞/地检/沿墙/红外等所有环境感知硬件。",
       "industry_pct_range": [
-        12,
-        25
+        20,
+        30
       ],
-      "industry_pct_avg": 16,
-      "industry_pct_note": "导航/传感器占BOM 15-25%，雷达组件约200-400元；T80S实测23%（自产LiDAR+3D结构光+视觉+AI加速器）；高端机上限可超25%",
+      "industry_pct_avg": 25,
+      "industry_pct_note": "按T80S公开拆解校准：传感器及导航约¥400+，内部7桶口径约25%；自产LiDAR+3D结构光+视觉+AI加速器会把旗舰机推到上限",
       "user_value_weight": {
         "note": "高感知价值——避障、建图、定位直接影响清扫效果，用户可立即感知",
         "entry": 0.6,
@@ -696,7 +716,7 @@
       ],
       "t80s_cost_breakdown": {
         "total_cny": 400,
-        "note": "T80S实测传感器及导航 ¥400+；激光雷达自产（传感器/发射器外采），3D结构光/视觉/IMU/接近传感器/AI加速器/主控芯片均外采",
+        "note": "T80S实测传感器及导航 ¥400+；激光雷达自产（传感器/发射器外采），3D结构光/视觉/IMU/接近传感器外采；AI加速器若为独立模组计入本桶，主控SoC仍归 compute_electronics",
         "source": "开源证券·科沃斯T80S拆解（2024）"
       },
       "boundary_notes": [
@@ -717,7 +737,7 @@
         15
       ],
       "industry_pct_avg": 11,
-      "industry_pct_note": "行走轮+吸尘风机+拖布电机合计占BOM 10-15%；越障升降机构拉高上限；入门无升降机型偏下限",
+      "industry_pct_note": "按T80S公开拆解校准：从“清洁模块 ¥500+”拆出吸尘风机、驱动轮/履带、越障升降等约¥180，内部7桶口径约11%；入门无升降机型偏下限",
       "user_value_weight": {
         "note": "中等感知——吸力直接可感知，越障能力是旗舰卖点；驱动轮可靠性用户感知滞后",
         "entry": 0.6,
@@ -776,11 +796,11 @@
       "order": 4,
       "definition": "主机端的清洁执行部件: 拖布、滚刷、边刷、主机尘盒、主机清水/污水盒、清水泵、进水阀等。不含基站端的清洗盘/污水桶。",
       "industry_pct_range": [
-        14,
-        30
+        16,
+        25
       ],
       "industry_pct_avg": 20,
-      "industry_pct_note": "清洁耗材/刷/滤网/拖布/水箱 15-20%；活水洗地旗舰（T80S实测29%）大幅拉高上限；含拖布电机+水泵+精密水路结构",
+      "industry_pct_note": "按T80S公开拆解校准：公开“清洁模块 ¥500+”拆为 cleaning 约¥320 + power_motion 约¥180；本桶只保留恒压活水、滚刷、拖布、水箱水泵、水路结构，内部7桶口径约20%",
       "user_value_weight": {
         "note": "高感知价值——拖地效果是购买决策核心，用户直接感受地面清洁度",
         "entry": 0.7,
@@ -938,8 +958,10 @@
         }
       ],
       "t80s_cost_breakdown": {
-        "total_cny": 500,
-        "note": "T80S实测清洁模块 ¥500+，含恒压活水洗地+高密度滚刷+吸尘电机+水箱水泵+精密机械结构",
+        "total_cny": 320,
+        "source_total_cny": 500,
+        "split_to_power_motion_cny": 180,
+        "note": "T80S公开口径清洁模块 ¥500+；内部7桶拆分后，cleaning 约¥320，吸尘电机/行走驱动/越障升降等约¥180 归 power_motion",
         "source": "开源证券·科沃斯T80S拆解（2024）"
       },
       "boundary_notes": [
@@ -955,11 +977,11 @@
       "order": 5,
       "definition": "全功能基站: 外壳+电源+集尘+清水/污水桶+加热烘干+自清洗+充电回充+基站 PCBA。纯充电桩基站可仅保留外壳+充电部分。",
       "industry_pct_range": [
-        15,
-        35
+        14,
+        22
       ],
-      "industry_pct_avg": 24,
-      "industry_pct_note": "基站可占总BOM 30-50%（高端款更贵）；T80S实测16%（基站功能偏基础）；含集尘+热水烘干的全功能基站可达35%+",
+      "industry_pct_avg": 17,
+      "industry_pct_note": "按T80S公开拆解校准：全能基站约¥250-300，内部7桶口径约17%；含重型机械臂、自动上下水、复杂热水烘干的机型可高于上限",
       "user_value_weight": {
         "note": "旗舰核心卖点——免维护体验直接决定品牌溢价；入门机无基站，此桶价值权重为 0",
         "entry": 0.0,
@@ -1097,11 +1119,11 @@
       "order": 6,
       "definition": "主机电池包 (电芯+BMS+封装+连接线)。充电 IC 归 compute_electronics, 基站电源板归 dock_station。",
       "industry_pct_range": [
-        3,
-        10
+        2,
+        6
       ],
-      "industry_pct_avg": 7,
-      "industry_pct_note": "Li-ion pack 约100-200元，占BOM 5-10%；旗舰回充依赖基站时电池缩容，T80S实测仅3%（约¥50）；下限放低至3%",
+      "industry_pct_avg": 3,
+      "industry_pct_note": "按T80S公开拆解校准：电池组约¥50，内部7桶口径约3%；大电池/无基站长续航机型可高于上限",
       "user_value_weight": {
         "note": "中等感知——续航直接可感知，但旗舰机用户对续航敏感度低（基站频繁充电）",
         "entry": 0.8,
@@ -1135,10 +1157,10 @@
       "definition": "主机外壳、面壳、底盘、保险杠、LDS 装饰、喷涂 CMF 表面处理、整机模具摊销、全机螺丝/垫片/磁铁。",
       "industry_pct_range": [
         10,
-        20
+        18
       ],
       "industry_pct_avg": 13,
-      "industry_pct_note": "外壳/壳料件 15-20%（含塑料件+清洁耗材刷滤网），T80S实测12%；入门机因无基站整机结构件占比相对更高",
+      "industry_pct_note": "按T80S公开拆解校准：结构及壳料件约¥200，内部7桶口径约13%；本桶不再混入清洁耗材刷滤网，入门无基站机型结构占比可能更高",
       "user_value_weight": {
         "note": "低-中感知——外观颜值影响购买冲动，但功能性感知弱；旗舰机 CMF 是品牌溢价重要载体",
         "entry": 0.5,

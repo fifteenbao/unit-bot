@@ -1,25 +1,15 @@
 from __future__ import annotations
 
-import json
-import os
 import re
 import time
 from typing import Any
 
-
-_AIHUBMIX_BASE = os.environ.get("AIHUBMIX_BASE_URL", "https://aihubmix.com/v1")
-_AIHUBMIX_MODEL = os.environ.get("AIHUBMIX_MODEL", "gpt-5.4-mini")
-_DEEPSEEK_BASE = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
-_DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+from core.llm_runtime import SERVER_WEB_TOOLS, make_runtime
 
 _MAX_TOOL_CALLS = 6
 _MAX_AGENT_ROUNDS = 8
 _API_RETRY_MAX = 2
 _API_RETRY_BACKOFF = (5, 15)
-
-
-def _env(name: str, default: str = "") -> str:
-    return os.environ.get(name, default)
 
 
 def _api_call_with_retry(call_fn, label: str = "API"):
@@ -114,17 +104,17 @@ def _client_web_fetch(url: str, max_chars: int = 6000) -> str:
     return f"[web_fetch: {url}]\n\n{text}"
 
 
-def _run_web_agent_anthropic(system: str, user: str, max_tokens: int = 8192) -> str:
-    import anthropic as _anthropic
-    client = _anthropic.Anthropic()
+def _run_web_agent_server_tools(
+    system: str,
+    user: str,
+    max_tokens: int = 8192,
+    runtime: Any | None = None,
+) -> str:
+    runtime = runtime or make_runtime(require_key=True)
+    client = runtime.client
     messages: list[dict] = [{"role": "user", "content": user}]
     round_n = 0
     tool_call_count = 0
-
-    server_tools = [
-        {"type": "web_search_20260209", "name": "web_search"},
-        {"type": "web_fetch_20260209",  "name": "web_fetch"},
-    ]
 
     while round_n < _MAX_AGENT_ROUNDS:
         round_n += 1
@@ -140,14 +130,14 @@ def _run_web_agent_anthropic(system: str, user: str, max_tokens: int = 8192) -> 
 
         resp = _api_call_with_retry(
             lambda: client.messages.create(
-                model="claude-sonnet-4-6",
+                model=runtime.model,
                 max_tokens=max_tokens,
                 system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-                tools=server_tools,
+                tools=SERVER_WEB_TOOLS,
                 messages=messages,
                 **({"tool_choice": {"type": "none"}} if budget_used else {}),
             ),
-            label="Anthropic",
+            label=runtime.backend,
         )
         messages.append({"role": "assistant", "content": resp.content})
         tool_uses = [b for b in resp.content if getattr(b, "type", "") == "tool_use"]
@@ -164,107 +154,36 @@ def _run_web_agent_anthropic(system: str, user: str, max_tokens: int = 8192) -> 
     return "\n".join(last_texts)
 
 
-def _run_web_agent_openai(system: str, user: str, max_tokens: int = 8192) -> str:
-    import httpx as _httpx
-
+def _run_web_agent_client_tools(
+    system: str,
+    user: str,
+    max_tokens: int = 8192,
+    runtime: Any | None = None,
+) -> str:
+    runtime = runtime or make_runtime(require_key=True)
+    client = runtime.client
     messages: list[dict] = [
-        {"role": "system", "content": system},
-        {"role": "user",   "content": user},
-    ]
-    tool_call_count = 0
-    openai_tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "web_search",
-                "description": "搜索互联网获取最新信息",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string"},
-                    },
-                    "required": ["query"],
-                },
-            },
-        }
-    ]
-
-    while len(messages) < _MAX_AGENT_ROUNDS * 2:
-        budget_used = (tool_call_count >= _MAX_TOOL_CALLS and len(messages) > 2)
-        if budget_used:
-            messages.append({
-                "role": "user",
-                "content": "停止搜索，直接输出最终结果。",
-            })
-
-        body: dict[str, Any] = {
-            "model": _AIHUBMIX_MODEL,
-            "max_completion_tokens": max_tokens,
-            "messages": messages,
-            "tools": openai_tools,
-            "tool_choice": "none" if budget_used else "auto",
-        }
-
-        def _call():
-            with _httpx.Client(timeout=120) as h:
-                r = h.post(
-                    f"{_AIHUBMIX_BASE}/chat/completions",
-                    headers={"Authorization": f"Bearer {_env('AIHUBMIX_API_KEY')}"},
-                    json=body,
-                )
-                if r.status_code != 200:
-                    raise RuntimeError(f"AIHUBMIX 返回 {r.status_code}: {r.text[:500]}")
-                return r.json()
-
-        data = _api_call_with_retry(_call, label="AIHUBMIX")
-        choice = data["choices"][0]
-        message = choice["message"]
-        messages.append(message)
-        tcs = message.get("tool_calls") or []
-        if not tcs:
-            return message.get("content") or ""
-        tool_call_count += len(tcs)
-        messages.extend([{
-            "role": "tool",
-            "tool_call_id": tc["id"],
-            "content": "[web_search 已由服务端执行，结果已包含在上下文中]",
-        } for tc in tcs])
-
-    return messages[-1].get("content") or ""
-
-
-def _run_web_agent_deepseek(system: str, user: str, max_tokens: int = 8192) -> str:
-    import httpx as _httpx
-
-    messages: list[dict] = [
-        {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
     round_n = 0
     tool_call_count = 0
-    tools = [
+    client_tools = [
         {
-            "type": "function",
-            "function": {
-                "name": "web_search",
-                "description": "搜索互联网获取最新信息。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"query": {"type": "string"}},
-                    "required": ["query"],
-                },
+            "name": "web_search",
+            "description": "搜索互联网获取最新信息。",
+            "input_schema": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
             },
         },
         {
-            "type": "function",
-            "function": {
-                "name": "web_fetch",
-                "description": "抓取指定 URL 的网页内容并提取纯文本。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"url": {"type": "string"}},
-                    "required": ["url"],
-                },
+            "name": "web_fetch",
+            "description": "抓取指定 URL 的网页内容并提取纯文本。",
+            "input_schema": {
+                "type": "object",
+                "properties": {"url": {"type": "string"}},
+                "required": ["url"],
             },
         },
     ]
@@ -278,43 +197,27 @@ def _run_web_agent_deepseek(system: str, user: str, max_tokens: int = 8192) -> s
                 "content": "停止搜索，直接输出最终结果。",
             })
 
-        body: dict[str, Any] = {
-            "model": _DEEPSEEK_MODEL,
-            "max_tokens": max_tokens,
-            "messages": messages,
-            "tools": tools,
-            "tool_choice": "none" if budget_used else "auto",
-        }
-
-        def _call():
-            with _httpx.Client(timeout=180) as h:
-                r = h.post(
-                    f"{_DEEPSEEK_BASE}/chat/completions",
-                    headers={"Authorization": f"Bearer {_env('DEEPSEEK_API_KEY')}"},
-                    json=body,
-                )
-                if r.status_code != 200:
-                    raise RuntimeError(f"DeepSeek 返回 {r.status_code}: {r.text[:500]}")
-                return r.json()
-
-        data = _api_call_with_retry(_call, label="DeepSeek")
-        choice = data["choices"][0]
-        message = choice["message"]
-        messages.append(message)
-        tcs = message.get("tool_calls") or []
-        if not tcs:
-            return message.get("content") or ""
-        tool_call_count += len(tcs)
-
+        response = _api_call_with_retry(
+            lambda: client.messages.create(
+                model=runtime.model,
+                max_tokens=max_tokens,
+                system=system,
+                tools=client_tools,
+                messages=messages,
+                **({"tool_choice": {"type": "none"}} if budget_used else {}),
+            ),
+            label=runtime.backend,
+        )
+        messages.append({"role": "assistant", "content": response.content})
+        tool_uses = [b for b in response.content if getattr(b, "type", "") == "tool_use"]
+        if not tool_uses:
+            texts = [b.text for b in response.content if getattr(b, "type", "") == "text"]
+            return "\n".join(texts)
+        tool_call_count += len(tool_uses)
         tool_results = []
-        for tc in tcs:
-            fn = tc.get("function", {})
-            fn_name = fn.get("name", "?")
-            fn_args_str = fn.get("arguments", "{}")
-            try:
-                fn_args = json.loads(fn_args_str) if fn_args_str else {}
-            except Exception:
-                fn_args = {}
+        for tc in tool_uses:
+            fn_name = tc.name
+            fn_args = tc.input or {}
             if fn_name == "web_search":
                 result = _client_web_search(fn_args.get("query", ""))
             elif fn_name == "web_fetch":
@@ -322,32 +225,27 @@ def _run_web_agent_deepseek(system: str, user: str, max_tokens: int = 8192) -> s
             else:
                 result = f"未知工具: {fn_name}"
             tool_results.append({
-                "role": "tool",
-                "tool_call_id": tc["id"],
+                "type": "tool_result",
+                "tool_use_id": tc.id,
                 "content": result,
             })
-        messages.extend(tool_results)
+        messages.append({"role": "user", "content": tool_results})
 
-    return messages[-1].get("content") or ""
+    last = messages[-1]
+    content = last.get("content", "")
+    if isinstance(content, str):
+        return content
+    return ""
 
 
 def run_web_agent(system: str, user: str, max_tokens: int = 8192) -> str:
     """
-    统一的 web-search 执行入口。
-    优先级：
-      1. AIHUBMIX_API_KEY
-      2. DEEPSEEK_API_KEY
-      3. ANTHROPIC_API_KEY
+    统一 web-search 执行入口。
+    只使用 core.llm_runtime 中的统一模型入口:
+      1. OPENCLAW_API_KEY: Anthropic-compatible client + 客户端 web_search/web_fetch
+      2. ANTHROPIC_API_KEY: Anthropic 原生 client + server-side web_search/web_fetch
     """
-    if _env("AIHUBMIX_API_KEY"):
-        return _run_web_agent_openai(system, user, max_tokens)
-    if _env("DEEPSEEK_API_KEY"):
-        return _run_web_agent_deepseek(system, user, max_tokens)
-    if _env("ANTHROPIC_API_KEY"):
-        return _run_web_agent_anthropic(system, user, max_tokens)
-    raise RuntimeError(
-        "未配置 LLM API Key，无法进行 web 调研。请设置以下任一环境变量:\n"
-        "  export ANTHROPIC_API_KEY=sk-ant-...\n"
-        "  export AIHUBMIX_API_KEY=sk-...\n"
-        "  export DEEPSEEK_API_KEY=sk-...\n"
-    )
+    runtime = make_runtime(require_key=True)
+    if runtime.supports_server_web_tools:
+        return _run_web_agent_server_tools(system, user, max_tokens, runtime)
+    return _run_web_agent_client_tools(system, user, max_tokens, runtime)

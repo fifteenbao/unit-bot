@@ -626,7 +626,7 @@ def stage1_discovery(model: str, msrp: float,
                 f"  • 当前 backend 服务端临时不稳\n\n"
                 f"建议:\n"
                 f"  1. 关代理直连: unset HTTPS_PROXY HTTP_PROXY 后重试\n"
-                f"  2. 换 backend: 设置 DEEPSEEK_API_KEY 走 DeepSeek, 或设置 ANTHROPIC_API_KEY 走 Anthropic 原生\n"
+                f"  2. 换统一入口: 设置 OPENCLAW_API_KEY 或 ANTHROPIC_API_KEY 后重试\n"
                 f"  3. 复用历史 CSV: --csv data/teardowns/<slug>_<date>_teardown.csv 跳过 Stage 1\n"
             ) from e
         raise

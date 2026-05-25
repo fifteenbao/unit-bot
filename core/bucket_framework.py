@@ -205,7 +205,7 @@ def render_prompt_bucket_section(include_example_spec: bool = True) -> str:
         lines.append("")
     valid_keys = ", ".join(f"`{k}`" for k in bucket_keys())
     lines.append(
-        f"⚠ **`bom_bucket` 字段必须严格使用以下 8 个 key 之一**: {valid_keys}。"
+        f"⚠ **`bom_bucket` 字段必须严格使用以下 {len(bucket_keys())} 个 key 之一**: {valid_keys}。"
         f"不要自创命名 (如 perception_system / actuation_drive / cleaning_function 等)。"
     )
     return "\n".join(lines).rstrip()

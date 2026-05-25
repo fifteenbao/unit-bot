@@ -19,8 +19,9 @@ P 现状研究  →  L 精益设计  →  A 先进裁剪  →  N 价值创新  �
 git clone https://github.com/fifteenbao/unit-bot && cd unit-bot
 pip install -r requirements.txt
 
-# 配置 API Key
-export DEEPSEEK_API_KEY=sk-xxx
+# 任选一种统一 LLM 入口
+export ANTHROPIC_API_KEY=sk-ant-xxx
+# 或: export OPENCLAW_API_KEY=sk-xxx
 
 python agent.py
 ```
@@ -197,19 +198,19 @@ Should Cost vs 估算价  (递归 L3+ 子件 → process/mold/tooling)
 
 ## 7 桶成本框架
 
-`/teardown` 子 agent 产生的 BOM 按 7 桶组织（基准来自开源证券·科沃斯 T80S 拆解 2024）：
+`/teardown` 子 agent 产生的 BOM 按 7 桶组织。基准参考开源证券·科沃斯 T80S 拆解成本预估：公开口径是 6 个硬件物料项，内部口径把“清洁模块 ¥500+”拆成 `cleaning` 与 `power_motion` 两桶。
 
 | # | 桶 | 基准占比 |
 |:-:|----|:---:|
-| 1 | 算力与电子 | ~13% |
-| 2 | 感知系统 | ~16% |
+| 1 | 算力与电子 | ~11% |
+| 2 | 感知系统 | ~25% |
 | 3 | 动力与驱动 | ~11% |
 | 4 | 清洁功能 | ~20% |
-| 5 | 基站系统 | ~24% |
-| 6 | 能源系统 | ~7% |
+| 5 | 基站系统 | ~17% |
+| 6 | 能源系统 | ~3% |
 | 7 | 整机结构 CMF | ~13% |
 
-整机 BOM 率：旗舰约 40~55%（硬件物料 / 零售价）。详细 4 级分解见 [SKILL.md](SKILL.md)。
+T80S 公开 6 项约 ¥1,600；折为内部 7 桶约为：感知 ¥400、清洁 ¥320、动力 ¥180、基站 ¥275、算力电子 ¥175、结构 ¥200、电池 ¥50。详细 4 级分解见 [SKILL.md](SKILL.md)。
 
 ---
 

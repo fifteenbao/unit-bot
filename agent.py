@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -36,6 +35,7 @@ from core.db import (
     upsert_product,
 )
 from core.brand_aliases import detect_brand
+from core.llm_runtime import make_client_and_tools
 
 console = Console()
 
@@ -1331,7 +1331,7 @@ def _run_plans_stage(stage: str, product_key: str) -> str:
             "hint": f"先跑 {hint_cmds} 再回来",
         }, ensure_ascii=False)
 
-    client, effective_tools = _make_client()
+    client, effective_tools, model = _make_client()
     sub_tools = filter_tools(effective_tools, stage_module.ALLOWED_TOOLS)
 
     console.print(f"  [dim]▶ {stage_module.STAGE_TITLE} 子 agent 启动 ({len(sub_tools)} 个工具)[/dim]")
@@ -1342,6 +1342,7 @@ def _run_plans_stage(stage: str, product_key: str) -> str:
         tools=sub_tools,
         dispatch=CLIENT_DISPATCH,
         user_input=stage_module.build_user_input(product_key),
+        model=model,
         log=lambda m: console.print(f"    [dim]{m}[/dim]"),
     )
 
@@ -2363,35 +2364,17 @@ PLANS 拆为 12 个独立子 agent，每个 agent 职责单一、输入输出清
 #  Agent 主循环
 # ═══════════════════════════════════════════════════════════════
 
-def _make_client() -> tuple[anthropic.Anthropic, list[dict]]:
+def _make_client() -> tuple[anthropic.Anthropic, list[dict], str]:
     """返回 (client, effective_tools)。
 
-    优先级:
-      1. OPENCLAW_API_KEY — OpenClaw 注入，使用其 OpenAI-compatible 端点（代理到 Claude）
-      2. ANTHROPIC_API_KEY — 直连 Anthropic，server-side web_search/web_fetch 可用
-    OpenClaw 后端不支持 Anthropic 专有的 server-side tool type，需要剔除。
+    统一从 core.llm_runtime 读取 OpenClaw / Anthropic 配置。
+    OpenClaw 后端不支持 Anthropic 专有 server-side tool type，会在 runtime 中剔除。
     """
-    openclaw_key  = os.environ.get("OPENCLAW_API_KEY", "")
-    openclaw_base = os.environ.get("OPENCLAW_BASE_URL", "https://api.openclaw.ai/v1")
-
-    if openclaw_key:
-        # OpenClaw 提供 OpenAI-compatible 接口，用 base_url + api_key 初始化
-        client = anthropic.Anthropic(
-            api_key=openclaw_key,
-            base_url=openclaw_base,
-        )
-        # 剔除 Anthropic 专有 server-side tools（OpenClaw 代理不支持）
-        tools = [t for t in ALL_TOOLS if t.get("type") not in (
-            "web_search_20260209", "web_fetch_20260209"
-        )]
-        return client, tools
-
-    # 默认：直连 Anthropic（从 ANTHROPIC_API_KEY 环境变量读取）
-    return anthropic.Anthropic(), ALL_TOOLS
+    return make_client_and_tools(ALL_TOOLS)
 
 
 def run_query(user_input: str, conversation: list[dict]) -> str:
-    client, effective_tools = _make_client()
+    client, effective_tools, model = _make_client()
     conversation.append({"role": "user", "content": user_input})
 
     # 跟踪 user_input 位置，用于 pause_turn 重发
@@ -2399,7 +2382,7 @@ def run_query(user_input: str, conversation: list[dict]) -> str:
 
     while True:
         response = client.messages.create(
-            model="claude-sonnet-4-6",
+            model=model,
             max_tokens=8192,
             system=SYSTEM_PROMPT,
             tools=effective_tools,
