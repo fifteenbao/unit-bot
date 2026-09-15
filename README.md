@@ -11,7 +11,7 @@ P 现状研究  →  L 精益设计  →  A 先进裁剪  →  N 价值创新  �
 3 agent       2 agent (DFMA)  2 agent (TRIZ)  3 agent       2 agent
 ```
 
-方法论原文：[价值设计流程PLANS.md](价值设计流程PLANS.md) · 架构设计：[docs/agents_architecture.md](docs/agents_architecture.md)
+方法论原文：[PLANS 价值设计流程.md](PLANS%20价值设计流程.md) · 架构设计：[docs/agents_architecture.md](docs/agents_architecture.md)
 
 ---
 
@@ -263,7 +263,7 @@ S /costsystem ─ 5 维体系（组织/设施/能力/数据/流程）
 
 | 想了解 | 看哪里 |
 |--------|--------|
-| PLANS 方法论原文 | [价值设计流程PLANS.md](价值设计流程PLANS.md) |
+| PLANS 方法论原文 | [PLANS 价值设计流程.md](PLANS%20价值设计流程.md) |
 | 12 子 agent 详细职责 + 文件约定 | [agents/README.md](agents/README.md) |
 | 命令完整参数和使用细节 | [SKILL.md](SKILL.md) |
 | 多 agent 编排架构设计 | [docs/agents_architecture.md](docs/agents_architecture.md) |
