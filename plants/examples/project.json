@@ -1,0 +1,36 @@
+{
+  "id": "demo-pump",
+  "name": "示例泵产品价值工程",
+  "industry": "通用机电产品",
+  "product": "演示泵 P-01（虚构示例）",
+  "currency": "CNY",
+  "annual_volume": null,
+  "objectives": [
+    "在满足性能与寿命要求的前提下降低全生命周期成本"
+  ],
+  "constraints": [
+    "关键性能与可靠性要求须由项目团队补充"
+  ],
+  "metrics": [
+    {
+      "name": "流量",
+      "unit": "L/min"
+    },
+    {
+      "name": "扬程",
+      "unit": "m"
+    },
+    {
+      "name": "效率",
+      "unit": "%"
+    }
+  ],
+  "cost_categories": [
+    "驱动",
+    "流体输送",
+    "控制",
+    "结构",
+    "装配测试"
+  ],
+  "source_files": []
+}

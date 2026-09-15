@@ -4,6 +4,8 @@
 
 This repo is also configured for Codex, Claude Code, OpenClaw, and similar coding agents. See [AGENTS.md](AGENTS.md) for the shared operating guide.
 
+通用工程主干已提取到 [PLANTS](plants/README.md)：保留 PLANS 五阶段、12 个角色和依赖编排，使用项目配置适配其他硬件产品，可独立复制运行。
+
 ```
 P 现状研究  →  L 精益设计  →  A 先进裁剪  →  N 价值创新  →  S 体系建设
 3 agent       2 agent (DFMA)  2 agent (TRIZ)  3 agent       2 agent

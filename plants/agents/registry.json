@@ -1,0 +1,259 @@
+{
+  "p_research": {
+    "command": "research",
+    "title": "P · 产品研究",
+    "phase": "P",
+    "deps": [],
+    "sections": [
+      "positioning",
+      "mvp_pains",
+      "key_metrics",
+      "benchmarks"
+    ],
+    "context": [],
+    "fields": {
+      "key_metrics": {
+        "metric": "str",
+        "value": "number",
+        "unit": "str"
+      }
+    }
+  },
+  "p_teardown": {
+    "command": "teardown",
+    "title": "P · 拆解分析",
+    "phase": "P",
+    "deps": [],
+    "sections": [
+      "teardown_sequence",
+      "assembly_inference",
+      "min_parts_candidates",
+      "assembly_pain_points"
+    ],
+    "context": [],
+    "fields": {
+      "teardown_sequence": {
+        "part_id": "part",
+        "qty": "number",
+        "material": "str",
+        "process": "str"
+      }
+    }
+  },
+  "p_issues": {
+    "command": "issues",
+    "title": "P · 问题诊断",
+    "phase": "P",
+    "deps": [],
+    "sections": [
+      "quality_issues",
+      "service_issues",
+      "improvement_opportunities"
+    ],
+    "context": [],
+    "fields": {}
+  },
+  "l_dfa": {
+    "command": "dfa",
+    "title": "L · DFA 优化",
+    "phase": "L",
+    "deps": [
+      "p_teardown",
+      "p_issues"
+    ],
+    "sections": [
+      "dfa_proposals",
+      "fastener_audit",
+      "standardization_targets"
+    ],
+    "context": [],
+    "fields": {
+      "dfa_proposals": {
+        "proposal_id": "proposal",
+        "part_id": "part",
+        "current_state": "str",
+        "proposed_change": "str",
+        "calculation_ids": "calculations",
+        "validation_plan": "str",
+        "risk": "str"
+      }
+    }
+  },
+  "l_dfm": {
+    "command": "dfm",
+    "title": "L · DFM 优化",
+    "phase": "L",
+    "deps": [
+      "p_teardown"
+    ],
+    "sections": [
+      "dfm_proposals",
+      "should_cost_analysis"
+    ],
+    "context": [],
+    "fields": {
+      "should_cost_analysis": {
+        "part_id": "part",
+        "calculation_ids": "calculations"
+      },
+      "dfm_proposals": {
+        "proposal_id": "proposal",
+        "part_id": "part",
+        "proposed_change": "str",
+        "validation_plan": "str",
+        "risk": "str"
+      }
+    }
+  },
+  "a_function": {
+    "command": "function",
+    "title": "A · 功能建模",
+    "phase": "A",
+    "deps": [
+      "l_dfa",
+      "l_dfm"
+    ],
+    "sections": [
+      "function_model",
+      "over_design",
+      "under_design",
+      "function_redundancy",
+      "function_gaps"
+    ],
+    "context": [
+      "p_research",
+      "p_issues"
+    ],
+    "fields": {
+      "function_model": {
+        "function_id": "function",
+        "value_weight": "number",
+        "cost_share": "number"
+      }
+    }
+  },
+  "a_trim": {
+    "command": "trim",
+    "title": "A · 裁剪策略",
+    "phase": "A",
+    "deps": [
+      "a_function"
+    ],
+    "sections": [
+      "trim_decisions",
+      "technical_contradictions",
+      "physical_contradictions",
+      "architectural_bottlenecks"
+    ],
+    "context": [],
+    "fields": {
+      "trim_decisions": {
+        "proposal_id": "proposal",
+        "compensation": "str",
+        "risk": "str"
+      }
+    }
+  },
+  "n_fos": {
+    "command": "fos",
+    "title": "N · 跨领域功能搜索",
+    "phase": "N",
+    "deps": [
+      "a_trim"
+    ],
+    "sections": [
+      "fos_proposals"
+    ],
+    "context": [
+      "p_research"
+    ],
+    "fields": {
+      "fos_proposals": {
+        "proposal_id": "proposal",
+        "principle": "str",
+        "validation_plan": "str",
+        "risk": "str"
+      }
+    }
+  },
+  "n_patent": {
+    "command": "patent",
+    "title": "N · 专利规避",
+    "phase": "N",
+    "deps": [
+      "n_fos"
+    ],
+    "sections": [
+      "patent_landscape",
+      "risk_patents",
+      "design_around_options",
+      "needs_lawyer_review"
+    ],
+    "context": [],
+    "fields": {
+      "needs_lawyer_review": {
+        "required": "bool",
+        "reason": "str"
+      }
+    }
+  },
+  "n_trend": {
+    "command": "trend",
+    "title": "N · 趋势研判",
+    "phase": "N",
+    "deps": [],
+    "sections": [
+      "s_curve_analysis",
+      "evolution_directions",
+      "four_new",
+      "innovation_roadmap_3y"
+    ],
+    "context": [],
+    "fields": {}
+  },
+  "s_platform": {
+    "command": "platform",
+    "title": "S · 平台架构",
+    "phase": "S",
+    "deps": [
+      "a_trim",
+      "n_fos"
+    ],
+    "sections": [
+      "complexity_assessment",
+      "platform_candidates",
+      "platform_designs",
+      "complexity_process"
+    ],
+    "context": [
+      "n_patent",
+      "n_trend"
+    ],
+    "fields": {
+      "complexity_assessment": {
+        "calculation_ids": "calculations"
+      }
+    }
+  },
+  "s_costsystem": {
+    "command": "costsystem",
+    "title": "S · 成本体系",
+    "phase": "S",
+    "deps": [
+      "a_trim",
+      "n_fos"
+    ],
+    "sections": [
+      "organization",
+      "facilities",
+      "capabilities",
+      "data_governance",
+      "process_gates"
+    ],
+    "context": [
+      "n_patent",
+      "n_trend"
+    ],
+    "fields": {}
+  }
+}
