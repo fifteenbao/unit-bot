@@ -35,7 +35,7 @@
   - 引用 `/research` 的 MVP 痛点：`"research.mvp_pains[i]: <原文>"`
   - 或引用 `/issues` 的用户期待/抱怨：`"issues.quality_issues[i]: <原文>"`
   - 或引用 `vs_compare` 的竞品价格差异作为支付意愿证据
-- `cost_evidence`：C 分必须引用 `dfma_analysis` 7 桶占比、`teardown` 中具体件的 BOM 占比，或可比件的 `query_materials` 单价
+- `cost_evidence`：C 分必须引用项目成本分类下的成本占比、拆解中具体件的 BOM 占比，或可比件的材料/报价证据。扫地机器人可引用案例 7 桶；其他行业不得默认使用 7 桶。
 - **over_design / under_design 的 `evidence_ref` 字段同理**——`under_design` 的每条必须能引用到 `/research` 或 `/issues` 的具体记录，不能凭空说"用户期待"
 
 ### 功能缺陷识别
@@ -46,7 +46,7 @@
 
 ## 工具使用建议
 
-1. `dfma_analysis` 直接给出 7 桶价值/成本比矩阵——这是功能价值分析的快速起点。
+1. 使用项目成本分类生成价值/成本比矩阵——这是功能价值分析的快速起点；扫地机器人可采用案例 7 桶。
 2. `get_motors` + `get_pcb_components` 拿载体清单。
 3. `vs_compare` 看竞品在某功能上是否做得更便宜（说明你过设计了）或缺失（说明竞品舍弃了）。
 4. **不要写库**，**不给裁剪决策**（让 `/trim` agent 决策）。
